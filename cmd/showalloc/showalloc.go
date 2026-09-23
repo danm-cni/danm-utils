@@ -13,9 +13,9 @@ import (
 	"log"
 	"net"
 
-	danmtypes "github.com/nokia/danm/crd/apis/danm/v1"
-	danmclientset "github.com/nokia/danm/crd/client/clientset/versioned"
-	"github.com/nokia/danm/pkg/bitarray"
+	danmtypes "github.com/danm-cni/danm/crd/apis/danm/v1"
+	danmclientset "github.com/danm-cni/danm/crd/client/clientset/versioned"
+	"github.com/danm-cni/danm/pkg/bitarray"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 )

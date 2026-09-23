@@ -21,7 +21,7 @@ package versioned
 import (
 	"fmt"
 
-	netpolv1 "github.com/nokia/danm-utils/crd/client/clientset/versioned/typed/netpol/v1"
+	netpolv1 "github.com/danm-cni/danm-utils/crd/client/clientset/versioned/typed/netpol/v1"
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"

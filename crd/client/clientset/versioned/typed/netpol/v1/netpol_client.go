@@ -19,8 +19,8 @@ limitations under the License.
 package v1
 
 import (
-	v1 "github.com/nokia/danm-utils/crd/api/netpol/v1"
-	"github.com/nokia/danm-utils/crd/client/clientset/versioned/scheme"
+	v1 "github.com/danm-cni/danm-utils/crd/api/netpol/v1"
+	"github.com/danm-cni/danm-utils/crd/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 

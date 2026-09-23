@@ -22,8 +22,8 @@ import (
 	"context"
 	"time"
 
-	v1 "github.com/nokia/danm-utils/crd/api/netpol/v1"
-	scheme "github.com/nokia/danm-utils/crd/client/clientset/versioned/scheme"
+	v1 "github.com/danm-cni/danm-utils/crd/api/netpol/v1"
+	scheme "github.com/danm-cni/danm-utils/crd/client/clientset/versioned/scheme"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"

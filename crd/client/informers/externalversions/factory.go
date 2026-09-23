@@ -23,9 +23,9 @@ import (
 	sync "sync"
 	time "time"
 
-	versioned "github.com/nokia/danm-utils/crd/client/clientset/versioned"
-	internalinterfaces "github.com/nokia/danm-utils/crd/client/informers/externalversions/internalinterfaces"
-	netpol "github.com/nokia/danm-utils/crd/client/informers/externalversions/netpol"
+	versioned "github.com/danm-cni/danm-utils/crd/client/clientset/versioned"
+	internalinterfaces "github.com/danm-cni/danm-utils/crd/client/informers/externalversions/internalinterfaces"
+	netpol "github.com/danm-cni/danm-utils/crd/client/informers/externalversions/netpol"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"

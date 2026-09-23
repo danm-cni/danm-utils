@@ -21,7 +21,7 @@ package fake
 import (
 	"context"
 
-	netpolv1 "github.com/nokia/danm-utils/crd/api/netpol/v1"
+	netpolv1 "github.com/danm-cni/danm-utils/crd/api/netpol/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	labels "k8s.io/apimachinery/pkg/labels"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
