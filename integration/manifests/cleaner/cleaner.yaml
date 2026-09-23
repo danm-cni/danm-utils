@@ -21,18 +21,22 @@ rules:
   - ""
   resources:
   - events
-  - endpoints
   verbs:
   - create
   - update
   - get
 - apiGroups:
-  - danm.k8s.io
+  - danm.io
   resources:
   - danmnets
   - danmeps
   - tenantnetworks
   - clusternetworks
+  verbs: [ "*" ]
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
   verbs: [ "*" ]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

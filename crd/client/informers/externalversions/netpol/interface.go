@@ -19,8 +19,8 @@ limitations under the License.
 package netpol
 
 import (
-	internalinterfaces "github.com/nokia/danm-utils/crd/client/informers/externalversions/internalinterfaces"
-	v1 "github.com/nokia/danm-utils/crd/client/informers/externalversions/netpol/v1"
+	internalinterfaces "github.com/danm-cni/danm-utils/crd/client/informers/externalversions/internalinterfaces"
+	v1 "github.com/danm-cni/danm-utils/crd/client/informers/externalversions/netpol/v1"
 )
 
 // Interface provides access to each of this group's versions.

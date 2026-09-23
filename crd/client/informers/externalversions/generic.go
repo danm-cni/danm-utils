@@ -21,7 +21,7 @@ package externalversions
 import (
 	"fmt"
 
-	v1 "github.com/nokia/danm-utils/crd/api/netpol/v1"
+	v1 "github.com/danm-cni/danm-utils/crd/api/netpol/v1"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 )

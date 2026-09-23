@@ -19,9 +19,9 @@ limitations under the License.
 package fake
 
 import (
-	clientset "github.com/nokia/danm-utils/crd/client/clientset/versioned"
-	netpolv1 "github.com/nokia/danm-utils/crd/client/clientset/versioned/typed/netpol/v1"
-	fakenetpolv1 "github.com/nokia/danm-utils/crd/client/clientset/versioned/typed/netpol/v1/fake"
+	clientset "github.com/danm-cni/danm-utils/crd/client/clientset/versioned"
+	netpolv1 "github.com/danm-cni/danm-utils/crd/client/clientset/versioned/typed/netpol/v1"
+	fakenetpolv1 "github.com/danm-cni/danm-utils/crd/client/clientset/versioned/typed/netpol/v1/fake"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
