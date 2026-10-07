@@ -4,12 +4,18 @@ go 1.26.5
 
 require (
 	github.com/containernetworking/plugins v1.9.1
+	github.com/spf13/cobra v1.10.2
 	k8s.io/api v0.36.2
+	k8s.io/apiextensions-apiserver v0.36.2
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
 	k8s.io/code-generator v0.36.2
 	k8s.io/kubernetes v1.19.0-beta.0
-	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
+)
+
+require (
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 )
 
 require (
@@ -48,7 +54,7 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.44.0 // indirect
+	golang.org/x/term v0.44.0
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
