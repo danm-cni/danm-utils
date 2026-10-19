@@ -9,13 +9,14 @@ require (
 	k8s.io/client-go v0.36.2
 	k8s.io/code-generator v0.36.2
 	k8s.io/kubernetes v1.19.0-beta.0
-	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
 )
+
+require k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 
 require (
 	github.com/apparentlymart/go-cidr v1.1.1 // indirect
 	github.com/containernetworking/cni v1.3.0 // indirect
-	github.com/danm-cni/danm v0.0.0-20260923131811-3c5259632778
+	github.com/danm-cni/danm v0.0.0-20261019102013-49025e3f2622
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
