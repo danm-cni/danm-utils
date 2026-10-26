@@ -5,17 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
-	cleaner "github.com/danm-cni/danm-utils/pkg/danmep"
+	"github.com/danm-cni/danm-utils/pkg/services"
 	danmv1 "github.com/danm-cni/danm/crd/apis/danm/v1"
 	danmclientset "github.com/danm-cni/danm/crd/client/clientset/versioned"
 	danmscheme "github.com/danm-cni/danm/crd/client/clientset/versioned/scheme"
+	danminformers "github.com/danm-cni/danm/crd/client/informers/externalversions/danm/v1"
+	danmlisters "github.com/danm-cni/danm/crd/client/listers/danm/v1"
 	"github.com/danm-cni/danm/pkg/danmep"
+	"github.com/danm-cni/danm/pkg/ipam"
 	"github.com/danm-cni/danm/pkg/netcontrol"
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -26,85 +31,130 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
+const (
+	podUIDIndex = "poduid"
+	gracePeriod = 1 * time.Minute
+	flannelType = "flannel"
+)
+
 type Cleaner struct {
-	DanmClient  danmclientset.Interface
-	Initialized bool
-	PodLister   corelisters.PodLister
-	PodSynced   cache.InformerSynced
-	Workqueue   workqueue.RateLimitingInterface
+	term           atomic.Pointer[term]
+	PodLister      corelisters.PodLister
+	PodSynced      cache.InformerSynced
+	danmepInformer cache.SharedIndexInformer
+	DanmEpLister   danmlisters.DanmEpLister
+	DanmEpSynced   cache.InformerSynced
 }
 
-func New(
-	danmClient danmclientset.Interface,
-	podInformer coreinformers.PodInformer) *Cleaner {
-	danmscheme.AddToScheme(scheme.Scheme)
-	cleaner := &Cleaner{
-		DanmClient:  danmClient,
-		Initialized: false,
-		PodLister:   podInformer.Lister(),
-		PodSynced:   podInformer.Informer().HasSynced,
-		Workqueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Endpoints"),
+type term struct {
+	stopCh     <-chan struct{}
+	danmClient danmclientset.Interface
+	workqueue  workqueue.TypedRateLimitingInterface[string]
+}
+
+func New(podInformer coreinformers.PodInformer, danmepInformer danminformers.DanmEpInformer) (*Cleaner, error) {
+	if err := danmscheme.AddToScheme(scheme.Scheme); err != nil {
+		return nil, fmt.Errorf("DANM API types could not be registered because: %w", err)
 	}
-	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		UpdateFunc: cleaner.updatePod,
+	cleaner := &Cleaner{
+		PodLister:      podInformer.Lister(),
+		PodSynced:      podInformer.Informer().HasSynced,
+		danmepInformer: danmepInformer.Informer(),
+		DanmEpLister:   danmepInformer.Lister(),
+		DanmEpSynced:   danmepInformer.Informer().HasSynced,
+	}
+	err := cleaner.danmepInformer.AddIndexers(cache.Indexers{podUIDIndex: indexByPodUID})
+	if err != nil {
+		return nil, fmt.Errorf("DanmEp indexers could not be added because: %w", err)
+	}
+	_, err = podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		DeleteFunc: cleaner.delPod,
 	})
-	return cleaner
-}
-
-func (c *Cleaner) Initialize() bool {
-	interval := 100
-	timeout := 10000
-	for timer := 0; timer <= timeout; timer = timer + interval {
-		//This can be easily expanded if we need to add more Informers to Cleaner in the future
-		if c.PodSynced() {
-			break
-		}
-		time.Sleep(time.Duration(interval) * time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("Pod event handler could not be registered because: %w", err)
 	}
-	c.Initialized = true
-	return true
+	return cleaner, nil
 }
 
-func PeriodicCleanup(danmClient danmclientset.Interface, podLister corelisters.PodLister, stopCh <-chan struct{}) {
-	go cleanupOnTick(danmClient, podLister)
-	log.Println("INFO: Successfully started Cleaner's periodic worker thread")
+func indexByPodUID(obj interface{}) ([]string, error) {
+	dep, ok := obj.(*danmv1.DanmEp)
+	if !ok {
+		return nil, nil
+	}
+	return []string{podKey(dep.Namespace, dep.Spec.PodUID)}, nil
+}
+
+func podKey(namespace string, uid types.UID) string {
+	return namespace + "/" + string(uid)
+}
+
+// WarmUp blocks until every cache of the Cleaner is synced, or stopCh closes.
+func (c *Cleaner) WarmUp(stopCh <-chan struct{}) error {
+	if ok := cache.WaitForCacheSync(stopCh, c.PodSynced, c.DanmEpSynced); !ok {
+		return errors.New("failed to wait for caches to sync")
+	}
+	return nil
+}
+
+func (c *Cleaner) Run(stopCh <-chan struct{}, danmClient danmclientset.Interface, threadiness int) {
+	defer runtime.HandleCrash()
+	t := &term{
+		stopCh:     stopCh,
+		danmClient: danmClient,
+		workqueue: workqueue.NewTypedRateLimitingQueueWithConfig(
+			workqueue.DefaultTypedControllerRateLimiter[string](),
+			workqueue.TypedRateLimitingQueueConfig[string]{Name: "Endpoints"}),
+	}
+	c.term.Store(t)
+	defer t.workqueue.ShutDown()
+	defer c.term.CompareAndSwap(t, nil)
+	log.Printf("INFO: Starting Cleaner event handler threads")
+	for i := 0; i < threadiness; i++ {
+		go wait.Until(func() { c.runWorker(t) }, time.Second, stopCh)
+	}
+	log.Printf("INFO: Starting Cleaner's periodic cleanup")
+	go wait.Until(func() { c.cleanDanglingEps(t) }, 30*time.Second, stopCh)
 	<-stopCh
-	log.Println("INFO: Shutting down Cleaner's periodic worker thread")
+	log.Printf("INFO: Shutting down Cleaner's event handler threads")
 }
 
-func cleanupOnTick(danmClient danmclientset.Interface, podLister corelisters.PodLister) {
-	timeForCleanup := time.NewTicker(10 * time.Second)
-	for {
-		select {
-		case <-timeForCleanup.C:
-			danmeps, err := danmep.FindByPodName(danmClient, "", "")
-			if err != nil {
-				log.Println("WARNING: Periodic cleaning failed with error:" + err.Error())
-				continue
-			}
-			cleanDanglingEps(danmClient, danmeps, podLister)
-		}
+func (c *Cleaner) activeTerm() *term {
+	t := c.term.Load()
+	if t == nil || t.isOver() {
+		return nil
+	}
+	return t
+}
+
+func (t *term) isOver() bool {
+	select {
+	case <-t.stopCh:
+		return true
+	default:
+		return false
 	}
 }
 
-func cleanDanglingEps(danmClient danmclientset.Interface, danmeps []danmv1.DanmEp, podLister corelisters.PodLister) {
+func (c *Cleaner) cleanDanglingEps(t *term) {
+	if t.isOver() {
+		return
+	}
+	danmeps, err := c.filterDanmeps()
+	if err != nil {
+		log.Printf("WARNING: Periodic cleaning failed with error: %s", err.Error())
+		return
+	}
 	podCache := make(map[types.UID]bool, 0)
 	for _, dep := range danmeps {
-		//We have already checked this Pod
 		if doesPodExist, ok := podCache[dep.Spec.PodUID]; ok {
 			if !doesPodExist {
-				log.Println("INFO: Cleaner freeing IPs belonging to interface:" + dep.Spec.Iface.Name + " of Pod:" + dep.Spec.Pod)
-				deleteInterface(danmClient, dep)
+				c.deleteInterface(t, dep)
 			}
 			continue
 		}
-		pod, err := podLister.Pods(dep.ObjectMeta.Namespace).Get(dep.Spec.Pod)
-		//Statefulset, or non-controlled Pods can be re-instantiated with the same name
-		//A Pod is considered non-existent if it does not exist OR it exist but with a different UID
+		pod, err := c.PodLister.Pods(dep.ObjectMeta.Namespace).Get(dep.Spec.Pod)
 		if k8serr.IsNotFound(err) || (err == nil && pod.ObjectMeta.UID != dep.Spec.PodUID) {
-			log.Println("INFO: Cleaner freeing IPs belonging to interface:" + dep.Spec.Iface.Name + " of Pod:" + dep.Spec.Pod)
-			deleteInterface(danmClient, dep)
+			c.deleteInterface(t, dep)
 			podCache[dep.Spec.PodUID] = false
 		} else {
 			podCache[dep.Spec.PodUID] = true
@@ -112,138 +162,99 @@ func cleanDanglingEps(danmClient danmclientset.Interface, danmeps []danmv1.DanmE
 	}
 }
 
-func (c *Cleaner) Run(threadiness int, stopCh <-chan struct{}) error {
-	defer runtime.HandleCrash()
-	defer c.Workqueue.ShutDown()
-	log.Println("INFO: starting Cleaner")
-	log.Println("INFO: waiting for Cleaner to synchronize cache")
-	if ok := cache.WaitForCacheSync(stopCh, c.PodSynced); !ok {
-		return errors.New("synching Cleaner's cache failed")
+func (c *Cleaner) filterDanmeps() ([]*danmv1.DanmEp, error) {
+	danmeps, err := c.DanmEpLister.List(labels.Everything())
+	if err != nil {
+		return nil, err
 	}
-	log.Println("INFO: Starting Cleaner event handler threads")
-	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
+	var valids []*danmv1.DanmEp
+	for _, dep := range danmeps {
+		if isInGracePeriod(dep) {
+			continue
+		}
+		valids = append(valids, dep)
 	}
-	log.Println("INFO: Successfully started Cleaner's event handler threads")
-	<-stopCh
-	log.Println("INFO: Shutting down Cleaner's event handler threads")
-	return nil
+	return valids, nil
 }
 
-func (c *Cleaner) runWorker() {
-	for c.processNextWorkItem() {
+func isInGracePeriod(dep *danmv1.DanmEp) bool {
+	return dep.GetCreationTimestamp().Time.After(time.Now().UTC().Add(-gracePeriod))
+}
+
+func (c *Cleaner) runWorker(t *term) {
+	for c.processNextWorkItem(t) {
 	}
 }
 
-func (c *Cleaner) processNextWorkItem() bool {
-	obj, shutdown := c.Workqueue.Get()
+func (c *Cleaner) processNextWorkItem(t *term) bool {
+	key, shutdown := t.workqueue.Get()
 	if shutdown {
 		return false
 	}
-	err := c.processItemInQueue(obj)
-	if err != nil {
-		runtime.HandleError(err)
+	defer t.workqueue.Done(key)
+	if err := c.handleKey(t, key); err != nil {
+		runtime.HandleError(fmt.Errorf("ERROR: could not process item: %s because: %w", key, err))
+		return true
 	}
+	t.workqueue.Forget(key)
 	return true
 }
 
-func (c *Cleaner) processItemInQueue(obj interface{}) error {
-	defer c.Workqueue.Done(obj)
-	var key string
-	var ok bool
-	if key, ok = obj.(string); !ok {
-		c.Workqueue.Forget(obj)
-		runtime.HandleError(fmt.Errorf("WARNING: Cannot decode work item from queue because instead string type we got %#v", obj))
-		return nil
-	}
-	if err := c.handleKey(key); err != nil {
-		return errors.New("ERROR: could not process item:" + key + " because:" + err.Error())
-	}
-	c.Workqueue.Forget(obj)
-	return nil
-}
-
-func (c *Cleaner) handleKey(key string) error {
-	ns, name, err := cache.SplitMetaNamespaceKey(key)
-	if err != nil {
-		log.Println("WARNING: Dropping work item from because its key:" + key + " could not be broken up into API object identifiers due to error:" + err.Error())
-		return nil
-	}
-	deps, err := danmep.FindByPodName(c.DanmClient, name, ns)
+func (c *Cleaner) handleKey(t *term, key string) error {
+	objs, err := c.danmepInformer.GetIndexer().ByIndex(podUIDIndex, key)
 	if err != nil {
 		return err
 	}
-	//Check if the specified DanmEp (if any) actually exists in the namespace
-	for _, dep := range deps {
-		log.Println("INFO: Cleaner freeing IPs belonging to interface:" + dep.Spec.Iface.Name + " of Pod:" + dep.Spec.Pod)
-		deleteInterface(c.DanmClient, dep)
+	for _, obj := range objs {
+		dep, ok := obj.(*danmv1.DanmEp)
+		if !ok || isInGracePeriod(dep) {
+			continue
+		}
+		c.deleteInterface(t, dep)
 	}
 	return nil
 }
 
-func deleteInterface(danmClient danmclientset.Interface, ep danmv1.DanmEp) {
-	//We give time for DANM to execute normal CNI operation
-	//We want to avoid possible interference, and with it exotic race conditions
-	//TODO: this quite possibly needs to be more sophisticated than this :)
-	time.Sleep(1 * time.Second)
-	_, err := danmClient.DanmV1().DanmEps(ep.ObjectMeta.Namespace).Get(context.TODO(), ep.ObjectMeta.Name, meta_v1.GetOptions{})
-	if err != nil {
-		//Problem solved itself in the meantime
+func (c *Cleaner) deleteInterface(t *term, ep *danmv1.DanmEp) {
+	log.Printf("INFO: Cleaner freeing IPs belonging to interface: %s of Pod: %s/%s", ep.Spec.Iface.Name, ep.Namespace, ep.Spec.Pod)
+	cachedUID := ep.UID
+	ep, err := t.danmClient.DanmV1().DanmEps(ep.Namespace).Get(context.TODO(), ep.Name, metav1.GetOptions{})
+	if err != nil || ep.UID != cachedUID {
 		return
 	}
-	netInfo, err := netcontrol.GetNetworkFromEp(danmClient, &ep)
+	netInfo, err := netcontrol.GetNetworkFromEp(t.danmClient, ep)
 	if err != nil {
-		log.Printf(
-			"WARNING: DanmEp '%s' in namespace '%s' could not be cleaned as its network could not be GET from K8s API server: %s",
+		log.Printf("WARNING: DanmEp '%s' in namespace '%s' could not be cleaned as its network could not be GET from K8s API server: %s",
 			ep.ObjectMeta.Name, ep.ObjectMeta.Namespace, err)
 		return
 	}
-	err = cleaner.DeleteDanmEp(danmClient, &ep, netInfo)
+	//Rules for thee, but not for me
+	if (ipam.WasIpAllocatedByDanm(ep.Spec.Iface.Address, netInfo) && ipam.WasIpAllocatedByDanm(ep.Spec.Iface.AddressIPv6, netInfo)) || ep.Spec.NetworkType == flannelType {
+		err = danmep.DeleteDanmEp(t.danmClient, ep, netInfo)
+	} else {
+		err = services.DeleteDanmEp(t.danmClient, ep, netInfo)
+	}
 	if err != nil {
-		log.Printf(
-			"WARNING: Danmep '%s' in namespace '%s' with network type '%s' could not be cleaned because of error: %s",
+		log.Printf("WARNING: DanmEp '%s' in namespace '%s' with network type '%s' could not be cleaned because of error: %s",
 			ep.ObjectMeta.Name, ep.ObjectMeta.Namespace, ep.Spec.NetworkType, err)
 	}
 }
 
-func (c *Cleaner) updatePod(old, new interface{}) {
-	oldPod := old.(*corev1.Pod)
-	newPod := new.(*corev1.Pod)
-	if oldPod.ResourceVersion == newPod.ResourceVersion {
-		return
-	}
-	// If pod was ready but the current status is not ready then we are interested in it...
-	//TODO: what happens when a Node loses connection, but comes back before Pod timeout?
-	//      does the Pod changes state? do we accidentally cleanup?
-	if !isPodRunning(newPod) && isPodRunning(oldPod) {
-		c.enqueuePod(new)
-	}
-}
-
-func isPodRunning(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodRunning
-}
-
-func (c *Cleaner) enqueuePod(obj interface{}) {
-	var key string
-	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
-		log.Println("WARNING: Could not schedule Pod for automatic cleanup because:" + err.Error())
-		return
-	}
-	c.Workqueue.Add(key)
-}
-
 func (c *Cleaner) delPod(obj interface{}) {
-	if _, ok := obj.(meta_v1.Object); !ok {
+	t := c.activeTerm()
+	if t == nil {
+		return
+	}
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 		if !ok {
 			return
 		}
-		_, ok = tombstone.Obj.(meta_v1.Object)
+		pod, ok = tombstone.Obj.(*corev1.Pod)
 		if !ok {
 			return
 		}
 	}
-	c.enqueuePod(obj)
+	t.workqueue.Add(podKey(pod.Namespace, pod.UID))
 }
