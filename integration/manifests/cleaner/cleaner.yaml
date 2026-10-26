@@ -70,6 +70,8 @@ spec:
         danm: cleaner
     spec:
       serviceAccountName: danm-cleaner
+      nodeSelector:
+        "node-role.kubernetes.io/master": ""
       containers:
       - name: danm-cleaner
         image: cleaner

@@ -2,21 +2,23 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/danm-cni/danm-utils/pkg/cleaner"
 	danmclientset "github.com/danm-cni/danm/crd/client/clientset/versioned"
+	danminformers "github.com/danm-cni/danm/crd/client/informers/externalversions"
 	corev1 "k8s.io/api/core/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -28,41 +30,36 @@ var (
 	kubeConf string
 )
 
+// main runs Cleaner as a leader elected controller.
+// The informers run for the whole process lifetime, so a standby instance is warm when it gets elected.
+// An instance losing its lease does not exit, but goes back to standby and waits for the next election.
 func main() {
 	flag.StringVar(&kubeConf, "kubeconf", "", "Absolute path to a valid kubeconf file. Only required if Cleaner runs out-of-cluster.")
 	flag.Parse()
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeConf)
 	if err != nil {
-		log.Println("ERROR: cannot build cluster config for K8s REST client because:" + err.Error())
-		os.Exit(1)
+		log.Fatalf("ERROR: cannot build cluster config for K8s REST client because: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cfg.Wrap(transport.ContextCanceller(ctx, fmt.Errorf("the leader is shutting down")))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	kubeClient, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		log.Println("ERROR: cannot build K8s REST client because:" + err.Error())
-		os.Exit(1)
+		log.Fatalf("ERROR: cannot build K8s REST client because: %v", err)
 	}
 	danmClient, err := danmclientset.NewForConfig(cfg)
 	if err != nil {
-		log.Println("ERROR: cannot build DANM REST client because:" + err.Error())
-		os.Exit(1)
+		log.Fatalf("ERROR: cannot build DANM REST client because: %v", err)
 	}
 	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kubeClient, time.Second*30)
-	mrHandy := cleaner.New(danmClient,
-		kubeInformerFactory.Core().V1().Pods())
-	cleanStuff := func(ctx context.Context) {
-		go kubeInformerFactory.Start(ctx.Done())
-		if !mrHandy.Initialize() {
-			log.Println("ERROR: Cleaner timed-out synching its cache, retrying!")
-			os.Exit(1)
-		}
-		go cleaner.PeriodicCleanup(mrHandy.DanmClient, mrHandy.PodLister, ctx.Done())
-		if err = mrHandy.Run(10, ctx.Done()); err != nil {
-			log.Println("ERROR: Cleaner failed with:" + err.Error())
-			os.Exit(1)
-		}
+	danmInformerFactory := danminformers.NewSharedInformerFactory(danmClient, time.Second*30)
+	mrHandy, err := cleaner.New(kubeInformerFactory.Core().V1().Pods(), danmInformerFactory.Danm().V1().DanmEps())
+	if err != nil {
+		log.Fatalf("ERROR: Cleaner could not be created because: %v", err)
+	}
+	kubeInformerFactory.Start(ctx.Done())
+	danmInformerFactory.Start(ctx.Done())
+	if err := mrHandy.WarmUp(ctx.Done()); err != nil {
+		log.Fatalf("ERROR: Cleaner caches could not be synced because: %v", err)
 	}
 	rl, err := resourcelock.New(resourcelock.LeasesResourceLock,
 		"kube-system",
@@ -74,22 +71,41 @@ func main() {
 			EventRecorder: createRecorder(kubeClient, "danm-cleaner"),
 		})
 	if err != nil {
-		log.Println("ERROR: Cannot create resource lock because:" + err.Error())
-		os.Exit(1)
+		log.Fatalf("ERROR: Cannot create resource lock because: %v", err)
 	}
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+	electionConfig := leaderelection.LeaderElectionConfig{
 		Lock:          rl,
 		LeaseDuration: 10 * time.Second,
 		RenewDeadline: 5 * time.Second,
 		RetryPeriod:   3 * time.Second,
 		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: cleanStuff,
+			OnStartedLeading: func(termCtx context.Context) {
+				lead(termCtx, cfg, mrHandy)
+			},
 			OnStoppedLeading: func() {
-				utilruntime.HandleError(errors.New("WARNING: Cleaner cluster lost its leader"))
+				log.Println("INFO: Cleaner instance is not the leader, waiting for the next election")
 			},
 		},
-	})
-	log.Println("WARNING: instance lost its lease, restarting!")
+	}
+	for ctx.Err() == nil {
+		leaderelection.RunOrDie(ctx, electionConfig)
+	}
+	log.Println("INFO: Cleaner is shutting down")
+}
+
+// lead runs Cleaner for one leadership term.
+// termCtx is cancelled by leader election when the lease is lost, and the DANM client of the term is fenced by it,
+// so a demoted leader cannot write to the API server anymore.
+// The leader election itself uses an unfenced client, so it can keep competing for the lease.
+func lead(termCtx context.Context, cfg *rest.Config, mrHandy *cleaner.Cleaner) {
+	termCfg := rest.CopyConfig(cfg)
+	termCfg.Wrap(transport.ContextCanceller(termCtx, fmt.Errorf("Cleaner is not the leader anymore, or is shutting down")))
+	danmClient, err := danmclientset.NewForConfig(termCfg)
+	if err != nil {
+		log.Fatalf("ERROR: cannot build DANM REST client of the leader because: %v", err)
+	}
+	log.Println("INFO: Cleaner instance became the leader")
+	mrHandy.Run(termCtx.Done(), danmClient, 10)
 }
 
 func GetHostname() string {

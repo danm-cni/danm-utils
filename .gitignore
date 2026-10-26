@@ -3,3 +3,6 @@ bin/
 vendor/
 ut/
 .idea/
+cleaner
+policer
+showalloc

@@ -1,4 +1,4 @@
-package danmep
+package services
 
 import (
 	"fmt"
