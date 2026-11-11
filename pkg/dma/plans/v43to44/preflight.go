@@ -36,11 +36,12 @@ const (
 type verifySourceCluster struct{}
 
 type preflightReport struct {
-	Mode         string         `json:"mode"`
-	Inventory    map[string]int `json:"inventory"`
-	MtuAtRisk    int            `json:"mtuAtRisk,omitempty"`
-	ReservedIPs  int            `json:"reservedIPs,omitempty"`
-	Architecture string         `json:"architecture,omitempty"`
+	Mode          string         `json:"mode"`
+	Inventory     map[string]int `json:"inventory"`
+	MtuAtRisk     int            `json:"mtuAtRisk,omitempty"`
+	PrunedObjects int            `json:"prunedObjects,omitempty"`
+	ReservedIPs   int            `json:"reservedIPs,omitempty"`
+	Architecture  string         `json:"architecture,omitempty"`
 }
 
 func (verifySourceCluster) Meta() engine.StepMeta {
@@ -91,6 +92,8 @@ func (verifySourceCluster) Execute(ctx context.Context, handle *cluster.Handle) 
 	if _, err := handle.State.Mutate(ctx, PlanID, func(record *state.PlanRecord) error {
 		record.Mode = string(check.mode)
 		record.Workloads = check.workloads
+		record.PrunedFieldsAccepted = handle.Options.AcceptPrunedFields
+		record.PrunedObjects = check.report.PrunedObjects
 		return nil
 	}); err != nil {
 		return err
@@ -104,6 +107,8 @@ func (verifySourceCluster) Rollback(ctx context.Context, handle *cluster.Handle)
 	if _, err := handle.State.Mutate(ctx, PlanID, func(record *state.PlanRecord) error {
 		record.Mode = ""
 		record.Workloads = nil
+		record.PrunedFieldsAccepted = false
+		record.PrunedObjects = 0
 		return nil
 	}); err != nil {
 		return err
@@ -384,7 +389,12 @@ func (check *preflight) scanSources(ctx context.Context, present map[apiKind]boo
 		}
 		check.report.Inventory[kind.Kind] = count
 		check.handle.Printf("  %s: %d", kind.Kind, count)
-		if len(pruned) > 0 {
+		check.report.PrunedObjects += len(pruned)
+		if len(pruned) > 0 && check.handle.Options.AcceptPrunedFields {
+			for _, finding := range pruned {
+				check.handle.Warnf("%s %s loses fields the DANM 4.4 schema does not know, accepted with --accept-pruned-fields", kind.Kind, finding)
+			}
+		} else if len(pruned) > 0 {
 			check.fail("%d %ss hold fields the DANM 4.4 schema does not know, which would be lost when they are copied: %s",
 				len(pruned), kind.Kind, listed(pruned))
 		}

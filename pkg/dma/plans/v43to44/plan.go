@@ -41,7 +41,7 @@ func init() {
 func New() engine.Plan {
 	return &plan{steps: []engine.Step{
 		verifySourceCluster{},
-		pending(2, "install-new-crds", engine.PhaseDeploy, "Install the danm.io CRDs of the detected deployment mode next to the danm.k8s.io ones."),
+		installNewCrds{},
 		pending(3, "install-new-rbac", engine.PhaseDeploy, "Authorise the DANM components for the danm.io group alongside the danm.k8s.io one."),
 		pending(4, "install-annotation-shim", engine.PhaseDeploy, "Deploy the webhook which adds danm.io/interfaces to every new Pod carrying danm.k8s.io/interfaces."),
 		pending(5, "annotate-existing-pods", engine.PhaseConvert, "Add danm.io/interfaces to every existing Pod carrying only danm.k8s.io/interfaces."),

@@ -149,9 +149,12 @@ func (fixture *fixture) handle(t *testing.T) (*cluster.Handle, *bytes.Buffer) {
 	for _, kind := range fixture.crds {
 		crds = append(crds, legacyCrd(kind))
 	}
-	listKinds := map[schema.GroupVersionResource]string{kindReservedIP.NewResource(): "ReservedIPList"}
+	listKinds := map[schema.GroupVersionResource]string{}
 	for _, kind := range oldKinds {
 		listKinds[kind.OldResource()] = kind.Kind + "List"
+	}
+	for _, kind := range newKinds {
+		listKinds[kind.NewResource()] = kind.Kind + "List"
 	}
 	dynamicObjects := []k8sruntime.Object{}
 	for _, objects := range fixture.objects {
@@ -628,4 +631,39 @@ func TestPreflightRefusesUndeclaredWorkloads(t *testing.T) {
 		"svcwatchr": {Kind: cluster.WorkloadDaemonSet, Namespace: "danm", Name: "svcwatcher"},
 	}}
 	expectFailure(t, execute(t, handle), "svcwatchr")
+}
+
+func TestPreflightAcceptsAndRecordsPrunedFields(t *testing.T) {
+	stray := network(kindDanmNet, "app", "stray", nil, map[string]any{"host_device": "ens4", "legacy_flag": true})
+	fixture := healthyFixture(cluster.ModeLightweight).add(kindDanmNet, stray)
+	fixture.options.AcceptDefaultMtu = true
+	fixture.options.AcceptPrunedFields = true
+	handle, out := fixture.handle(t)
+	if err := execute(t, handle); err != nil {
+		t.Fatalf("preflight failed although pruned fields were accepted: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "WARNING: DanmNet app/stray (spec.Options.legacy_flag) loses fields") {
+		t.Fatalf("the accepted pruned field is not reported:\n%s", out.String())
+	}
+	record, _ := handle.State.Load(context.Background(), PlanID)
+	if !record.PrunedFieldsAccepted || record.PrunedObjects != 1 {
+		t.Fatalf("the acceptance is recorded as %v with %d objects", record.PrunedFieldsAccepted, record.PrunedObjects)
+	}
+	runner := engine.NewRunner(New(), handle, &engine.TokenConfirmer{Supplied: "verify-source-cluster", Out: io.Discard})
+	if err := runner.Rollback(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	record, _ = handle.State.Load(context.Background(), PlanID)
+	if record.PrunedFieldsAccepted || record.PrunedObjects != 0 {
+		t.Fatalf("the acceptance survived the rollback of step 1")
+	}
+}
+
+func TestForceDoesNotAcceptPrunedFields(t *testing.T) {
+	stray := network(kindDanmNet, "app", "stray", nil, map[string]any{"host_device": "ens4", "legacy_flag": true})
+	fixture := healthyFixture(cluster.ModeLightweight).add(kindDanmNet, stray)
+	fixture.options.AcceptDefaultMtu = true
+	fixture.options.Force = true
+	handle, _ := fixture.handle(t)
+	expectFailure(t, execute(t, handle), "app/stray", "spec.Options.legacy_flag")
 }

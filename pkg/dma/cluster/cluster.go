@@ -53,7 +53,8 @@ type Options struct {
 	Force bool
 	// AcceptDefaultMtu lets preflight pass even though networks which would silently lose
 	// their MTU carry no migration tag.
-	AcceptDefaultMtu bool
+	AcceptDefaultMtu   bool
+	AcceptPrunedFields bool
 	// NoCanary skips the single node trial run before a fleet wide CNI binary rollout.
 	NoCanary bool
 	// BinaryImage replaces the assistant's own image in the CNI binary copier.
