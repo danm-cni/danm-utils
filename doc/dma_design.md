@@ -756,22 +756,19 @@ Implementation notes:
 ### Step 4: `install-annotation-shim`
 
 Deploys a small mutating admission webhook, shipped in the `dma` image, that on Pod CREATE sets
-`danm.io/interfaces` from `danm.k8s.io/interfaces` by the translation rule below, and adds the marker
+`danm.io/interfaces` from `danm.k8s.io/interfaces` as described below, and adds the marker
 annotation `dma.danm.io/interfaces-copied: "shim"`.
 
-**Translation rule.** Shared by the shim, step 5, step 9 and step 13. The new value is the old value
-with every entry kept as it is, except that an entry's `ip` or `ip6` is replaced by the name of a
-ReservedIP when that ReservedIP is in the Pod's
-namespace, on the entry's network, holds an address of that family, and either:
+**New value.** The new key's value is a byte-for-byte copy of the old one. Networks, static
+addresses, `dynamic`, `none`, routes and every other field stay as they are, since 4.4 reads all of
+them the same way as 4.3; a static address stays a static address. The old key is never changed, so
+the 4.3 CNI keeps requesting exactly what it did.
 
-- the entry requests that address literally, with or without a prefix length, or
-- the Pod is one the address was replicated from, by namespace and name as recorded in the
-  `dma.danm.io/source-pods` annotation of the ReservedIP by step 9. This covers a dynamic request from the original Pod, and from a StatefulSet
-  or bare Pod recreated under the same name.
-
-A dynamic request from any other Pod, such as a new replica of a Deployment, is left unchanged; no
-Pod identity ties it to one address. Before step 9 no such ReservedIP exists, so the rule produces a
-verbatim copy. The old key is never changed, so the 4.3 CNI keeps requesting exactly what it did.
+The only exception is the ReservedIP rewrite of step 9, which can only take effect once step 9 has
+created ReservedIPs; until then, and always in lightweight mode, nothing exists for it to match and
+the shim's output is the plain copy. The shim applies the rewrite from the start, so that the Pods it
+admits after step 9 need no further action. The copy and the rewrite are one function in the plan
+package, shared by the shim, step 5, step 9 and step 13.
 
 The shim reads the ReservedIPs from an informer, and its
 ServiceAccount gets `get`, `list` and `watch` on `reservedips.danm.io`. When its cache is not
@@ -793,12 +790,12 @@ overridden.
 
 **The shim outlives the plan.** Step 14 does not remove it. Until a workload's template carries
 `danm.io/interfaces`, the shim is what gives its new Pods the key the 4.4 CNI reads, and with it the
-ReservedIP mapping of the translation rule. Removing it earlier would silently put every new Pod of
+ReservedIP rewrite of step 9. Removing it earlier would silently put every new Pod of
 an unconverted workload on the default network.
 
 - `dma shim status` lists every Pod template that still carries `danm.k8s.io/interfaces` without
   `danm.io/interfaces`: Deployments, StatefulSets, DaemonSets, CronJobs, and ReplicaSets and Jobs
-  without an owner. For each, it also prints the value the translation rule would give its Pods
+  without an owner. For each, it also prints the value the shim would give its Pods
   today, which is what the operator should put on the template.
 - `dma shim remove` deletes the shim's webhook configuration, Deployment and RBAC. It refuses to
   run before step 14 is `Done`, since rollback of step 4 is the way to remove it during the plan,
@@ -808,10 +805,101 @@ an unconverted workload on the default network.
 
 Rollback removes the webhook configuration and its Deployment.
 
+**Objects.** All in the namespace of `dma`'s own state, `kube-system` by default:
+
+| Object | Name |
+| --- | --- |
+| ServiceAccount, Service, Deployment | `dma-shim` |
+| Secret, type `kubernetes.io/tls` | `dma-shim-tls` |
+| ClusterRole and ClusterRoleBinding | `danm:dma-shim`, `get`, `list`, `watch` on `reservedips.danm.io` |
+| MutatingWebhookConfiguration | `dma-shim`, one webhook `interfaces-shim.dma.danm.io` |
+
+The ClusterRole is created in production mode only; lightweight mode has no ReservedIPs.
+
+**Webhook configuration.** Pods, `CREATE` only, `admissionregistration.k8s.io/v1`,
+`admissionReviewVersions: [v1]`, `sideEffects: None`, `reinvocationPolicy: Never`,
+`timeoutSeconds: 5`, no namespace or object selector, since annotations cannot be selected on.
+`failurePolicy: Ignore`: the shim must never be the reason a Pod cannot be created anywhere in the
+cluster. A Pod admitted while the shim is down misses the new key; during the plan step 5 or step 13
+catches it, after the plan `dma shim status` does not, so the Deployment runs two replicas with
+preferred anti-affinity across nodes.
+
+**TLS.** `dma` generates a self-signed ECDSA P-256 CA and a serving certificate for
+`dma-shim.<namespace>.svc`, both valid for ten years because the shim outlives the plan and nothing
+rotates them. They are stored in `dma-shim-tls` (`tls.crt`, `tls.key`, `ca.crt`), and the CA is the
+`caBundle` of the webhook. An existing Secret is reused while its certificate covers that name and
+has more than a year left; otherwise it is regenerated and the webhook's `caBundle` replaced with it.
+
+**Image and process.** The shim runs the `dma` image itself, `dma shim serve`, a hidden subcommand.
+The image is the one the running `dma` container uses, read from `dma`'s own Pod, which the
+manifest of section 8 names through the downward API (`DMA_POD_NAME`, `DMA_POD_NAMESPACE`).
+`--shim-image` overrides it and is required when `dma` runs outside the cluster. The pull secret and
+pull policy come from the image configuration of section 5.6. The container serves HTTPS on 8443
+from the mounted Secret, has a readiness probe on `/healthz`, runs as non-root with a read-only root
+filesystem and no privileges. Its arguments name the mode: in production mode it runs an informer on
+`reservedips.danm.io`; in lightweight mode it has none and the rule is always a verbatim copy.
+
+**Admission.** A Pod without `danm.k8s.io/interfaces`, or already carrying `danm.io/interfaces`, is
+allowed unchanged. Otherwise the response is a JSON patch adding `danm.io/interfaces` with the
+new value and the marker. A value that is not a JSON list of objects is copied verbatim, so the
+4.4 CNI rejects it exactly as the 4.3 CNI would. The shim never denies a Pod.
+
+**Execute** creates or updates, in this order, the ServiceAccount, the ClusterRole and its binding,
+the Secret, the Service and the Deployment, waits up to `--rollout-timeout` for the Deployment to be
+available, and only then creates or updates the webhook configuration, so that the webhook never
+points at a shim that is not serving. A Deployment that does not become available fails the step
+before the webhook configuration exists.
+
+**Detect.** `Done` when every object exists, the Deployment is available, and the webhook
+configuration points at the Service with the Secret's CA as its `caBundle`; `NotStarted` when none
+exists; `Partial` otherwise.
+
+**Rollback** deletes the webhook configuration first, then the Deployment, Service, Secret,
+ClusterRoleBinding, ClusterRole and ServiceAccount.
+
+**Manifests.** Every object of the shim is declared in YAML under
+`pkg/dma/plans/v43to44/manifests/shim/`, embedded into the binary, rendered through `text/template`
+and then unmarshalled strictly into its typed object:
+
+| File | Object |
+| --- | --- |
+| `serviceaccount.yaml` | ServiceAccount `dma-shim` |
+| `clusterrole.yaml` | ClusterRole `danm:dma-shim` |
+| `secret.yaml` | Secret `dma-shim-tls`, type `kubernetes.io/tls`, without data |
+| `service.yaml` | Service `dma-shim` |
+| `deployment.yaml` | Deployment `dma-shim` |
+| `webhook.yaml` | MutatingWebhookConfiguration `dma-shim` |
+
+Names, ports, paths, the replica count, the user and the container's arguments are literal text in
+these files, as in the RBAC manifests of A.3. Only what a run decides is a template action:
+`.Namespace`, `.Image`, `.PullPolicy`, `.PullSecret` guarding the `imagePullSecrets` list, `.Mode`
+in the container's arguments, and `.CaBundle`, the base64 CA of the Secret, in the webhook's client
+configuration. Rendering uses `missingkey=error`, and a loaded object whose name is not the name the
+step expects fails the step, exactly as step 3 refuses an RBAC file whose ClusterRole is misnamed,
+so a renamed manifest can never leave an object behind under the old name.
+
+Each ensure function takes from its loaded object only what it owns: the rules of the ClusterRole,
+the selector and ports of the Service, the spec of the Deployment, the webhooks of the
+configuration. The certificates are generated, so `secret.yaml` carries metadata and type alone and
+`Data` is filled in afterwards. The ClusterRoleBinding has no manifest: it is built from the subject
+by the same helper step 3 uses.
+
+Implementation notes:
+
+- The `dma` binary sits at `/usr/local/bin/dma` in its image, and the shim's container runs it with
+  `shim serve --mode <mode> --port 8443 --tls-dir /etc/dma-shim`, as user 65532. The own image is
+  that of the container named `dma` in `dma`'s Pod, or of its only container.
+- The shim's Deployment, Service and webhook configuration are created or updated to the expected
+  form on every run, whoever created them. The Secret is kept while its certificate verifies against
+  its CA for the Service name with more than a year left; `Detect` does not look at expiry, so a
+  certificate close to expiry is renewed by running the step again.
+- `dma shim status` evaluates the new value for a template without a Pod name, so only literal
+  addresses can map to a ReservedIP there. `dma shim remove` deletes the same objects as rollback.
+
 ### Step 5: `annotate-existing-pods`
 
 Patches `danm.io/interfaces` onto every existing Pod that carries `danm.k8s.io/interfaces` but not
-the new key, with the value given by the translation rule of step 4, together with the marker
+the new key, with the value the shim would give it (step 4), together with the marker
 annotation `dma.danm.io/interfaces-copied: "patched"`.
 
 Without it, every Pod created before step 4 carries only the old key, which causes two problems:
@@ -952,7 +1040,8 @@ created. Like the copies of steps 6 and 7, they are written while no webhook cov
 - adds it to `Status.ReservedIPs` of its new-group network, through the `/status` subresource
 - sets `Spec.Description` to name the source `DanmEp`s
 - records the namespace and name of every Pod whose `DanmEp` was tagged for it in the
-  `dma.danm.io/source-pods` annotation, a JSON list, used by the translation rule of step 4
+  `dma.danm.io/source-pods` annotation, a JSON list of `{"namespace": ..., "name": ...}` objects, used
+  by the ReservedIP rewrite below
 
 **Validation.** Every tag is validated before anything is written; any error fails the step with no
 change made. Step 1 runs the same checks on the tags present at that time, as early feedback.
@@ -979,12 +1068,45 @@ counts these `DanmEp`s as users of the address (`isAddressShared`) and frees the
 the last one is deleted. Copies under a non-shared tag keep empty `RipRefs`, exactly as 4.4 records
 a non-shareable ReservedIP allocation.
 
+**ReservedIP rewrite.** Once a tagged `DanmEp`'s address is held by a ReservedIP, 4.4 treats it as
+reserved: it refuses a literal static request for it, and never hands it out dynamically. A Pod that
+is meant to keep the address therefore has to ask for it by the ReservedIP's name, and the rewrite
+changes exactly those requests in the value of `danm.io/interfaces`; nothing else is ever rewritten.
+It is applied by the shim to every new Pod, by this step to the Pods already marked, and by step 13.
+
+For a Pod in namespace `N` named `P`, given the ReservedIPs of the cluster:
+
+1. If the old value does not decode as a JSON list of objects, the new value is a byte-for-byte copy.
+2. Otherwise each entry is processed on its own. If no field is replaced, the new value is again a
+   byte-for-byte copy of the old one. If one is, the list is re-encoded with every entry and every
+   field kept in its original order, and only the replaced fields differ.
+3. An entry whose network is given as `network` (a `DanmNet`) is copied unchanged. For an entry given
+   as `tenantNetwork: T` or `clusterNetwork: C`, the ReservedIPs considered are those in namespace
+   `N` whose `spec.network` is `{name: T, type: TenantNetwork}` or `{name: C, type: ClusterNetwork}`.
+4. The `ip` field is looked at against the IPv4 address of those ReservedIPs, and `ip6` against their
+   IPv6 address, independently. A field is replaced by the name of a ReservedIP when exactly one of
+   them matches:
+   - the field holds an address, with or without a prefix length, which is the same address as the
+     ReservedIP's once both are normalised, e.g. `10.0.0.5/24` matches `10.0.0.5`; or
+   - the field is `dynamic` and `{namespace: N, name: P}` is listed in the ReservedIP's
+     `dma.danm.io/source-pods` annotation, written by this step. This keeps the address of a Pod whose
+     `DanmEp` was tagged, and of a StatefulSet Pod or bare Pod recreated under the same name, even
+     though it asked for no particular address.
+5. In every other case the field is copied unchanged: a static address no ReservedIP holds, `dynamic`
+   for any Pod not listed, `none`, an empty field, or a match against more than one ReservedIP (which
+   this step never creates, and which is logged).
+
+A Pod created from `generateName` has no name at admission, so for the shim only the literal case
+can apply to it; this step and step 13 see its final name. A dynamic request from a Pod not listed,
+such as a new replica of a Deployment, is left as `dynamic`: no Pod identity ties it to one address,
+and 4.4 gives it a free one.
+
 **Pod annotations.** 4.4 skips a reserved address in dynamic allocation, and refuses a literal
 static request for it, so a Pod gets the address only when its `danm.io/interfaces` entry references
-the ReservedIP by name. Once the ReservedIPs exist, the step re-applies the translation rule of
-step 4 to every Pod carrying the marker and patches those whose value changes. That covers the
+the ReservedIP by name. Once the ReservedIPs exist, the step re-applies the rewrite to every Pod
+carrying the marker and patches those whose value changes. That covers the
 Pods patched by step 5 and the Pods the shim admitted since step 4, neither of which could see a
-ReservedIP yet. From then on the shim applies the rule to every new Pod.
+ReservedIP yet. From then on the shim applies the rewrite to every new Pod.
 
 The step reports, without failing, every Pod controller whose template requests a replicated
 address dynamically and whose Pods do not keep their names, such as a Deployment: its new Pods are
@@ -998,7 +1120,7 @@ Tags added or changed after this step are not replicated, see step 13.
 Rollback clears the `RipRefs` set by this step and recomputes the labels of those `DanmEp` copies.
 It removes the ReservedIPs from their networks' `Status.ReservedIPs`, then deletes them. The
 ReservedIPs the step created or found identical are recorded in its state record by namespace and
-name, which is how rollback finds them; `dma` does not mark objects as its own. It then re-applies the translation rule to every marked Pod,
+name, which is how rollback finds them; `dma` does not mark objects as its own. It then re-applies the rewrite to every marked Pod,
 which with the ReservedIPs gone restores a verbatim copy of the old value. LIFO rollback guarantees that the 4.4 webhook of step 10 is
 not live at that point, so nothing tries to validate the deletions.
 
@@ -1100,7 +1222,7 @@ The 4.4 webhook is live by now, so the shape of every write matters (section 2.5
   network and address. Any other tag added after step 9 is reported, not replicated: the 4.4
   webhook now refuses to create a ReservedIP for an address in use.
 - **Pods**: any Pod still carrying only `danm.k8s.io/interfaces` is patched exactly as in step 5,
-  and the translation rule of step 4 is re-applied to every marked Pod. Neither is expected to
+  and the ReservedIP rewrite of step 9 is re-applied to every marked Pod. Neither is expected to
   change anything, but this covers a Pod admitted while the shim was briefly unavailable or its
   ReservedIP cache was not synced.
 
@@ -1154,10 +1276,12 @@ ClusterRoleBinding. The ClusterRole needs:
 - core ConfigMaps in `kube-system`: full access, for state and config
 - core Pods, Nodes, Services, Secrets: get, list, patch, and create and delete for Pods, for the
   canary and the copier
+- core Services, Secrets and ServiceAccounts: create, update and delete, for the annotation shim
 - `batch` Jobs: create, get, list, delete, for the canary copier and `dma shim status`
 
 The Pod itself needs no host mounts; the copier DaemonSet it creates carries the `/opt/cni/bin`
-mount.
+mount. It exposes its own name and namespace through the downward API as `DMA_POD_NAME` and
+`DMA_POD_NAMESPACE`, from which `dma` finds its own image for the annotation shim.
 
 The operator runs subcommands with `kubectl exec`.
 
@@ -1238,6 +1362,9 @@ resolves images itself (section 5.6) and so embeds the plain `.yaml` forms, patc
 field programmatically rather than templating. The DaemonSet templates are used only as the
 reference for the fields step 11 changes; step 11 patches the live DaemonSets and never replaces them.
 
+The annotation shim's objects have no upstream source, `dma` defines them. They are embedded under
+`pkg/dma/plans/v43to44/manifests/shim/` as the templates step 4 renders, described there.
+
 The 4.3 equivalents of the same files, from the `v4.3.0` tag, are what step 14 must delete and what
 rollback of steps 3, 10 and 11 must restore.
 
@@ -1275,7 +1402,7 @@ Recorded here so they are not relitigated:
 - Addresses become ReservedIPs only when the operator tags their old-group `DanmEp`, and the tag's
   value names the ReservedIP (step 9). `dma` creates them before the 4.4 webhook goes live, since
   the webhook refuses an address already in use. Workload templates are not changed to reference
-  them; Pod annotations are, through the translation rule shared by the shim and the Pod patching
+  them; Pod annotations are, through the ReservedIP rewrite shared by the shim and the Pod patching
   (step 4).
 - No per-object backups; convert steps copy rather than move, so old objects are their own backup.
   Workload specs patched in place are still snapshotted.

@@ -44,7 +44,7 @@ func New() engine.Plan {
 		verifySourceCluster{},
 		installNewCrds{},
 		installNewRbac{},
-		pending(4, "install-annotation-shim", engine.PhaseDeploy, "Deploy the webhook which adds danm.io/interfaces to every new Pod carrying danm.k8s.io/interfaces."),
+		installAnnotationShim{},
 		pending(5, "annotate-existing-pods", engine.PhaseConvert, "Add danm.io/interfaces to every existing Pod carrying only danm.k8s.io/interfaces."),
 		pending(6, "copy-network-objects", engine.PhaseConvert, "Copy the network objects and TenantConfigs of the danm.k8s.io group into the danm.io group."),
 		pending(7, "copy-danmeps", engine.PhaseConvert, "Copy the DanmEps of the danm.k8s.io group into the danm.io group."),

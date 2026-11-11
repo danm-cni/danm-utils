@@ -1,0 +1,23 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: dma-shim
+webhooks:
+  - name: interfaces-shim.dma.danm.io
+    clientConfig:
+      service:
+        namespace: {{ .Namespace }}
+        name: dma-shim
+        path: /mutate
+        port: 443
+      caBundle: "{{ .CaBundle }}"
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    failurePolicy: Ignore
+    sideEffects: None
+    reinvocationPolicy: Never
+    timeoutSeconds: 5
+    admissionReviewVersions: ["v1"]

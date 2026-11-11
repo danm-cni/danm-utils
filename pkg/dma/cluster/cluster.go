@@ -60,6 +60,7 @@ type Options struct {
 	NoCanary bool
 	// BinaryImage replaces the assistant's own image in the CNI binary copier.
 	BinaryImage string
+	ShimImage   string
 	// StepTimeout bounds how long a single step may run.
 	StepTimeout time.Duration
 	// RolloutTimeout bounds how long a step waits for a patched workload to become ready
@@ -127,7 +128,7 @@ func New(ctx context.Context, config Config) (*Handle, error) {
 	if config.Out == nil {
 		config.Out = os.Stdout
 	}
-	restConfig, err := restConfig(config.Kubeconfig)
+	restConfig, err := RestConfig(config.Kubeconfig)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +260,7 @@ func (handle *Handle) PayloadDir(payload string) string {
 	return handle.PayloadRoot + "/" + payload
 }
 
-func restConfig(kubeconfig string) (*rest.Config, error) {
+func RestConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
