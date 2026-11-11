@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dma-shim
+  namespace: {{ .Namespace }}
+  labels:
+    app: dma-shim
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dma-shim
+  template:
+    metadata:
+      labels:
+        app: dma-shim
+    spec:
+      serviceAccountName: dma-shim
+{{- if .PullSecret }}
+      imagePullSecrets:
+        - name: {{ .PullSecret }}
+{{- end }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: dma-shim
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: shim
+          image: {{ .Image }}
+          imagePullPolicy: {{ .PullPolicy }}
+          command: ["/usr/local/bin/dma"]
+          args: ["shim", "serve", "--mode", "{{ .Mode }}", "--port", "8443", "--tls-dir", "/etc/dma-shim"]
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/dma-shim
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tls
+          secret:
+            secretName: dma-shim-tls

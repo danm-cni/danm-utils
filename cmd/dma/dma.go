@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/danm-cni/danm-utils/pkg/dma/cluster"
 	"github.com/danm-cni/danm-utils/pkg/dma/engine"
-	_ "github.com/danm-cni/danm-utils/pkg/dma/plans/v43to44"
+	"github.com/danm-cni/danm-utils/pkg/dma/plans/v43to44"
 	"github.com/spf13/cobra"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
@@ -36,6 +38,7 @@ type globalFlags struct {
 	acceptPruned     bool
 	noCanary         bool
 	binaryImage      string
+	shimImage        string
 	stepTimeout      time.Duration
 	rolloutTimeout   time.Duration
 }
@@ -76,6 +79,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&flags.acceptPruned, "accept-pruned-fields", false, "accept that fields the target schema does not know are dropped from the migrated objects, recorded once by preflight")
 	root.PersistentFlags().BoolVar(&flags.noCanary, "no-canary", false, "skip the single node trial run before a fleet wide CNI binary rollout")
 	root.PersistentFlags().StringVar(&flags.binaryImage, "binary-image", "", "image to copy the CNI binaries from, instead of the assistant's own image")
+	root.PersistentFlags().StringVar(&flags.shimImage, "shim-image", "", "image of the annotation shim, instead of the image of the assistant's own Pod")
 	root.PersistentFlags().DurationVar(&flags.stepTimeout, "step-timeout", 30*time.Minute, "how long a single step may run")
 	root.PersistentFlags().DurationVar(&flags.rolloutTimeout, "rollout-timeout", 10*time.Minute, "how long a step waits for a patched workload before reverting it")
 	root.AddCommand(
@@ -84,6 +88,7 @@ func newRootCommand() *cobra.Command {
 		newStatusCommand(flags),
 		newExecuteCommand(flags),
 		newRollbackCommand(flags),
+		newShimCommand(flags),
 		newVersionCommand(),
 	)
 	return root
@@ -218,6 +223,85 @@ func newRollbackCommand(flags *globalFlags) *cobra.Command {
 	return command
 }
 
+func newShimCommand(flags *globalFlags) *cobra.Command {
+	shim := &cobra.Command{
+		Use:   "shim",
+		Short: "manage the annotation shim which outlives the 4.3 to 4.4 migration plan",
+	}
+	shim.AddCommand(newShimServeCommand(flags), newShimStatusCommand(flags), newShimRemoveCommand(flags))
+	return shim
+}
+
+func newShimServeCommand(flags *globalFlags) *cobra.Command {
+	var tlsDir, mode string
+	var port int
+	command := &cobra.Command{
+		Use:    "serve",
+		Short:  "serve the annotation shim webhook",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE: func(command *cobra.Command, _ []string) error {
+			parsed, err := cluster.ParseMode(mode)
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return v43to44.ServeShim(ctx, v43to44.ShimServerConfig{Kubeconfig: flags.kubeconfig, Mode: parsed, TlsDir: tlsDir, Port: port})
+		},
+	}
+	command.Flags().StringVar(&tlsDir, "tls-dir", v43to44.ShimTlsDir, "directory holding tls.crt and tls.key")
+	command.Flags().StringVar(&mode, "mode", "", "DANM deployment mode, lightweight or production")
+	command.Flags().IntVar(&port, "port", v43to44.ShimPort, "port to serve HTTPS on")
+	return command
+}
+
+func newShimStatusCommand(flags *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "list the Pod templates which still depend on the annotation shim",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			handle, err := newHandle(command.Context(), flags)
+			if err != nil {
+				return err
+			}
+			templates, err := v43to44.ShimStatus(command.Context(), handle)
+			if err != nil {
+				return err
+			}
+			out := command.OutOrStdout()
+			if len(templates) == 0 {
+				fmt.Fprintf(out, "No Pod template carries only %s, the annotation shim can be removed once the plan is complete.\n", v43to44.OldInterfacesKey)
+				return nil
+			}
+			fmt.Fprintf(out, "%d Pod templates carry only %s. Add %s with the value shown to each:\n", len(templates), v43to44.OldInterfacesKey, v43to44.NewInterfacesKey)
+			for _, template := range templates {
+				fmt.Fprintf(out, "%s %s/%s\n  %s: %s\n", template.Kind, template.Namespace, template.Name, v43to44.NewInterfacesKey, template.Value)
+			}
+			return nil
+		},
+	}
+}
+
+func newShimRemoveCommand(flags *globalFlags) *cobra.Command {
+	var confirm string
+	command := &cobra.Command{
+		Use:   "remove",
+		Short: "remove the annotation shim after the migration plan is complete",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			handle, err := newHandle(command.Context(), flags)
+			if err != nil {
+				return err
+			}
+			return v43to44.RemoveShim(command.Context(), handle, confirmer(confirm))
+		},
+	}
+	command.Flags().StringVar(&confirm, "confirm", "", "confirmation token, for running without a terminal")
+	return command
+}
+
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -248,6 +332,14 @@ func resolvePlan(planID, from, to string) (engine.Plan, error) {
 }
 
 func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confirm string) (*engine.Runner, error) {
+	handle, err := newHandle(ctx, flags)
+	if err != nil {
+		return nil, err
+	}
+	return engine.NewRunner(plan, handle, confirmer(confirm)), nil
+}
+
+func newHandle(ctx context.Context, flags *globalFlags) (*cluster.Handle, error) {
 	overrides := map[string]cluster.ComponentImage{}
 	for _, raw := range flags.imageOverrides {
 		component, image, err := cluster.ParseOverride(raw)
@@ -292,6 +384,7 @@ func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confir
 			AcceptPrunedFields: flags.acceptPruned,
 			NoCanary:           flags.noCanary,
 			BinaryImage:        flags.binaryImage,
+			ShimImage:          flags.shimImage,
 			StepTimeout:        flags.stepTimeout,
 			RolloutTimeout:     flags.rolloutTimeout,
 		},
@@ -301,7 +394,7 @@ func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confir
 		return nil, err
 	}
 	handle.Mode = mode
-	return engine.NewRunner(plan, handle, confirmer(confirm)), nil
+	return handle, nil
 }
 
 func confirmer(supplied string) engine.Confirmer {
