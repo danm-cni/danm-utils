@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danm-cni/danm-utils/pkg/dma/state"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -77,8 +78,9 @@ type Handle struct {
 	// Images is the resolution rule set, not the resolved references. Steps resolve the
 	// components they need, so that a plan declaring more components than a step rolls does
 	// not force every step to care.
-	Images    ImageConfig
-	Workloads WorkloadConfig
+	Images     ImageConfig
+	Workloads  WorkloadConfig
+	CniSubject *rbacv1.Subject
 	// Mode is authoritative for the whole plan once preflight has recorded it.
 	Mode Mode
 	// PayloadRoot is the directory inside the assistant's own image holding the CNI binaries
@@ -108,6 +110,7 @@ type Config struct {
 	PayloadRoot string
 	Overrides   map[string]ComponentImage
 	Workloads   map[string]WorkloadRef
+	CniSubject  *rbacv1.Subject
 	Options     Options
 	Out         io.Writer
 }
@@ -148,6 +151,13 @@ func New(ctx context.Context, config Config) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
+	cniSubject, err := LoadCniSubject(ctx, kubeClient, config.Namespace, config.ConfigName)
+	if err != nil {
+		return nil, err
+	}
+	if config.CniSubject != nil {
+		cniSubject = config.CniSubject
+	}
 	return &Handle{
 		Kube:        kubeClient,
 		ApiExt:      apiExtClient,
@@ -157,6 +167,7 @@ func New(ctx context.Context, config Config) (*Handle, error) {
 		State:       state.NewStore(kubeClient, config.Namespace, config.StateName),
 		Images:      images.WithOverrides(config.Overrides),
 		Workloads:   workloads.WithOverrides(config.Workloads),
+		CniSubject:  cniSubject,
 		PayloadRoot: config.PayloadRoot,
 		Namespace:   config.Namespace,
 		Operator:    operator(),

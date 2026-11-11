@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: danm:webhook-4.4
+rules:
+- apiGroups:
+  - danm.io
+  resources:
+  - tenantconfigs
+  - danmeps
+  - tenantnetworks
+  - tenantnetworks/status
+  - clusternetworks
+  - clusternetworks/status
+  - reservedips
+  verbs: ["*"]

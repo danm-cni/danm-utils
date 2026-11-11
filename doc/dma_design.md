@@ -598,6 +598,8 @@ warning; see sections 4.4 and 5.9. Neither is relaxed by `--force`.
 `--force` relaxes only the predecessor check of `dma execute`, and never for an irreversible step:
 cleanup always requires every earlier step to be `Done`.
 
+`--cni-subject` names the identity the CNI binary authenticates as, for step 3.
+
 `dma shim status` and `dma shim remove` manage the annotation shim after the plan is complete; see
 step 4.
 
@@ -690,18 +692,16 @@ Implementation notes:
 
 - The mode is the one recorded by step 1, or `--mode` when step 2 is forced ahead of step 1; with
   neither the step fails.
-- Every CRD the step creates carries the label `dma.danm.io/plan: 4.3-to-4.4`. A `danm.io` CRD
-  without it was not installed by `dma`, and the step refuses to proceed while one exists among the
-  target set, as it does while any CRD of the other mode exists in the new group. Both checks run
-  before anything is created.
-- `Detect` counts labelled CRDs only: none is `NotStarted`, the full target set with every member
-  `Established` is `Done`, anything else is `Partial`. A retry after a partial run creates only the
-  missing members.
+- `dma` does not track who created an object. A target CRD which already exists is taken as it is,
+  whoever installed it. The step refuses to proceed while any CRD of the other mode exists in the new
+  group, checked before anything is created.
+- `Detect`: no target CRD is `NotStarted`, the full target set with every member `Established` is
+  `Done`, anything else is `Partial`. A retry after a partial run creates only the missing members.
 - The set is gated on every member reaching `Established` within 30 seconds; a member whose
   `NamesAccepted` condition turns false fails immediately. On any failure while creating or waiting,
-  every labelled CRD is deleted again, in either mode.
-- Rollback, and the revert on failure, delete only labelled CRDs, and only after confirming that none
-  of them holds an object; otherwise nothing is deleted. They wait until the deleted CRDs are gone,
+  every `danm.io` CRD of the plan is deleted again, in either mode.
+- Rollback, and the revert on failure, delete every existing `danm.io` CRD of the plan, and only after
+  confirming that none of them holds an object; otherwise nothing is deleted. They wait until the deleted CRDs are gone,
   so that the step can run again at once.
 
 ### Step 3: `install-new-rbac`
@@ -715,7 +715,43 @@ Adds ClusterRoles and ClusterRoleBindings for the new group alongside the existi
 This must precede step 11, whose components need these roles to start, and step 12: the new CNI
 binary reads the new group, and without the role it would fail CNI ADD on an authorisation denial.
 
-Rollback removes the added rules.
+The existing 4.3 roles and bindings are not touched. Each new ClusterRole carries the complete rule
+set of its 4.4 manifest (A.3), not only the `danm.io` rules. All of them belong to the `danm` group
+of role names, one per component, and carry the target release as a suffix so that they cannot
+clash with any role of an existing installation: `danm:cni-4.4` (from `caas:danm`),
+`danm:webhook-4.4` (from `caas:danm-webhook`), `danm:netwatcher-4.4` (from `system:netwatcher`),
+`danm:svcwatcher-4.4` (from `system:svcwatcher`) and `danm:cleaner-4.4` (from `caas:danm-cleaner`).
+Each has one ClusterRoleBinding of the same name. A role or binding of one of these names which
+already exists is updated to the expected rules and subjects, whoever created it. The
+`danm:<component>-4.4` names stay after the plan completes and are the RBAC of the 4.4 installation
+once step 14 has removed the 4.3 roles.
+
+The subjects bound are the identities which actually run DANM, never the manifest defaults:
+
+- **Components.** The ServiceAccount of each component workload recorded by step 1 (section 5.8):
+  `spec.template.spec.serviceAccountName` in the workload's namespace, `default` when unset. An
+  optional component that is not deployed gets neither role nor binding.
+- **CNI.** The CNI binary does not run as a Pod; it authenticates with the kubeconfig named by its
+  CNI configuration file on each node, which `dma` does not read. Its identity is configured instead,
+  as `cni_subject` in `dma-config` or with `--cni-subject`, in the form
+  `ServiceAccount/<namespace>/<name>` or `User/<name>`; the flag wins over the ConfigMap. There is no
+  default: without either, the step fails before any RBAC object is written. It becomes the subject
+  of `danm:cni-4.4`.
+
+The subjects bound are recorded in the step's state record, and `Detect` reads the step as `Done`
+when every expected role and binding exists and holds the 4.4 rules and the recorded subjects; as `NotStarted` when none exists; otherwise as `Partial`. A retry recreates or
+corrects only what differs.
+
+Rollback deletes every `danm:<component>-4.4` role and binding of the plan. It is LIFO behind
+steps 4 to 13, so no 4.4 component depends on them any more when it runs.
+
+Implementation notes:
+
+- The subjects are computed, and stored as the `subjects` snapshot of the step, before any RBAC object
+  is written, so that `Detect` can judge a partial run.
+- An existing role of one of the names loses any `aggregationRule`, since aggregation would replace
+  its rules. An existing binding referring to another role is deleted and created again, as `roleRef`
+  is immutable.
 
 ### Step 4: `install-annotation-shim`
 
@@ -725,19 +761,19 @@ annotation `dma.danm.io/interfaces-copied: "shim"`.
 
 **Translation rule.** Shared by the shim, step 5, step 9 and step 13. The new value is the old value
 with every entry kept as it is, except that an entry's `ip` or `ip6` is replaced by the name of a
-ReservedIP that step 9 created (labelled `dma.danm.io/plan`) when that ReservedIP is in the Pod's
+ReservedIP when that ReservedIP is in the Pod's
 namespace, on the entry's network, holds an address of that family, and either:
 
 - the entry requests that address literally, with or without a prefix length, or
-- the Pod is one the address was replicated from, by namespace and name as recorded on the
-  ReservedIP in step 9. This covers a dynamic request from the original Pod, and from a StatefulSet
+- the Pod is one the address was replicated from, by namespace and name as recorded in the
+  `dma.danm.io/source-pods` annotation of the ReservedIP by step 9. This covers a dynamic request from the original Pod, and from a StatefulSet
   or bare Pod recreated under the same name.
 
 A dynamic request from any other Pod, such as a new replica of a Deployment, is left unchanged; no
 Pod identity ties it to one address. Before step 9 no such ReservedIP exists, so the rule produces a
 verbatim copy. The old key is never changed, so the 4.3 CNI keeps requesting exactly what it did.
 
-The shim reads the ReservedIPs from an informer restricted to the plan label, and its
+The shim reads the ReservedIPs from an informer, and its
 ServiceAccount gets `get`, `list` and `watch` on `reservedips.danm.io`. When its cache is not
 synced, it falls back to a verbatim copy rather than rejecting the Pod; step 13 corrects such Pods.
 
@@ -914,8 +950,7 @@ created. Like the copies of steps 6 and 7, they are written while no webhook cov
 
 - labels each ReservedIP with `danm.io/network-name` and `danm.io/network-type`
 - adds it to `Status.ReservedIPs` of its new-group network, through the `/status` subresource
-- sets `Spec.Description` to name the source `DanmEp`s, and adds the label `dma.danm.io/plan` with the
-  plan ID, which is how rollback and the shim find the objects
+- sets `Spec.Description` to name the source `DanmEp`s
 - records the namespace and name of every Pod whose `DanmEp` was tagged for it in the
   `dma.danm.io/source-pods` annotation, a JSON list, used by the translation rule of step 4
 
@@ -932,8 +967,8 @@ change made. Step 1 runs the same checks on the tags present at that time, as ea
   family, and on whether it is shared.
 - A non-shared name is used by exactly one `DanmEp` for its family.
 - No two ReservedIPs on one network claim the same address.
-- No ReservedIP of that name already exists, unless it is an identical one from an earlier run of
-  this step.
+- No ReservedIP of that name already exists, unless it is identical to the one the step would
+  create, whoever created it.
 
 The `alloc` bitmask is not checked or changed. The address is already allocated by the `DanmEp`
 holding it, and stays so until that `DanmEp` is deleted.
@@ -961,8 +996,9 @@ Idempotent and resumable: existing identical ReservedIPs and already-set `RipRef
 Tags added or changed after this step are not replicated, see step 13.
 
 Rollback clears the `RipRefs` set by this step and recomputes the labels of those `DanmEp` copies.
-It removes the ReservedIPs from their networks' `Status.ReservedIPs`, then deletes every
-ReservedIP labelled with the plan ID. It then re-applies the translation rule to every marked Pod,
+It removes the ReservedIPs from their networks' `Status.ReservedIPs`, then deletes them. The
+ReservedIPs the step created or found identical are recorded in its state record by namespace and
+name, which is how rollback finds them; `dma` does not mark objects as its own. It then re-applies the translation rule to every marked Pod,
 which with the ReservedIPs gone restores a verbatim copy of the old value. LIFO rollback guarantees that the 4.4 webhook of step 10 is
 not live at that point, so nothing tries to validate the deletions.
 
@@ -1190,6 +1226,13 @@ of the plan fails if an embedded CRD declares `selectableFields` again.
 The CRDs are embedded verbatim under `pkg/dma/plans/v43to44/manifests/crds/<mode>/`. Step 1 reads
 their schemas for its pruning check, step 2 applies them.
 
+The ClusterRole document of each RBAC source is embedded under
+`pkg/dma/plans/v43to44/manifests/rbac/<component>.yaml`, the component being `cni`, `webhook`,
+`netwatcher`, `svcwatcher` or `cleaner`, verbatim except for its metadata: the name is the
+`danm:<component>-4.4` name of step 3, and the upstream `kubernetes.io/bootstrapping` labels are
+dropped. Step 3 takes only the rules, and refuses a file whose name does not match; bindings are its
+own.
+
 The `.yaml.tmpl` variants use `confd`-style `getenv` interpolation for the image reference. `dma`
 resolves images itself (section 5.6) and so embeds the plain `.yaml` forms, patching the image
 field programmatically rather than templating. The DaemonSet templates are used only as the
@@ -1260,6 +1303,12 @@ Recorded here so they are not relitigated:
   `workload_<component>` key in `dma-config` or the `--workload` flag, with the plan's manifest names
   as defaults (section 5.8). Every component may be a DaemonSet or a Deployment. Which components are
   required is fixed by the plan. References are resolved once by step 1 and read from state afterwards.
+- `dma` never labels or otherwise marks the objects it creates, and never checks who created an
+  object. Steps find their objects by name, or by what they recorded in state.
+- Step 3 adds separate ClusterRoles and ClusterRoleBindings named `danm:<component>-4.4`, one per
+  component, carrying the full 4.4 rules, bound to the ServiceAccounts of the recorded workloads and
+  to the CNI identity named by `--cni-subject` or `cni_subject`, which has no default. `dma` never reads CNI configuration or kubeconfig files. The 4.3 RBAC
+  is never patched.
 - Preflight hard-fails on any field the 4.4 schema would prune, overridable with
   `--accept-pruned-fields`. The acceptance is all or nothing, recorded in state by step 1, applies to
   every later copy and resync, and is not implied by `--force` (section 5.9).

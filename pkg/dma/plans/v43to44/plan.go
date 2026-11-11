@@ -11,7 +11,8 @@ import (
 const (
 	PlanID        = "4.3-to-4.4"
 	DanmNamespace = "kube-system"
-	PayloadName   = "4.4"
+	TargetRelease = "4.4"
+	PayloadName   = TargetRelease
 )
 
 const (
@@ -42,7 +43,7 @@ func New() engine.Plan {
 	return &plan{steps: []engine.Step{
 		verifySourceCluster{},
 		installNewCrds{},
-		pending(3, "install-new-rbac", engine.PhaseDeploy, "Authorise the DANM components for the danm.io group alongside the danm.k8s.io one."),
+		installNewRbac{},
 		pending(4, "install-annotation-shim", engine.PhaseDeploy, "Deploy the webhook which adds danm.io/interfaces to every new Pod carrying danm.k8s.io/interfaces."),
 		pending(5, "annotate-existing-pods", engine.PhaseConvert, "Add danm.io/interfaces to every existing Pod carrying only danm.k8s.io/interfaces."),
 		pending(6, "copy-network-objects", engine.PhaseConvert, "Copy the network objects and TenantConfigs of the danm.k8s.io group into the danm.io group."),
@@ -61,7 +62,7 @@ func (plan *plan) Meta() engine.PlanMeta {
 	return engine.PlanMeta{
 		ID:            PlanID,
 		From:          "4.3",
-		To:            "4.4",
+		To:            TargetRelease,
 		Description:   "Moves DANM from the danm.k8s.io API group to the danm.io API group without restarting DANM-attached Pods.",
 		Components:    []string{ComponentWebhook, ComponentNetwatcher, ComponentSvcwatcher, ComponentCleaner},
 		BinaryPayload: PayloadName,

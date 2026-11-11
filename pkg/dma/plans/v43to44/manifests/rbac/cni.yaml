@@ -1,0 +1,20 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: danm:cni-4.4
+rules:
+  - apiGroups:
+    - danm.io
+    resources:
+    - danmnets
+    - danmeps
+    - tenantnetworks
+    - tenantnetworks/status
+    - clusternetworks
+    - clusternetworks/status
+    - reservedips
+    - reservedips/status
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]

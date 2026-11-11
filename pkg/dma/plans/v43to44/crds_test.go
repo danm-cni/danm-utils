@@ -61,14 +61,9 @@ func (fixture *crdFixture) handle(t *testing.T) (*cluster.Handle, *bytes.Buffer)
 	}, out
 }
 
-func newCrd(kind apiKind, labelled, established bool) *apiextensionsv1.CustomResourceDefinition {
+func newCrd(kind apiKind) *apiextensionsv1.CustomResourceDefinition {
 	crd := &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: kind.NewCrdName()}}
-	if labelled {
-		crd.Labels = map[string]string{PlanLabel: PlanID}
-	}
-	if established {
-		crd.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}
-	}
+	crd.Status.Conditions = []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}
 	return crd
 }
 
@@ -121,8 +116,8 @@ func TestInstallNewCrdsInstallsTheProductionSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crd.Labels[PlanLabel] != PlanID || crd.Spec.Group != NewGroup || crd.Spec.Names.Kind != kindReservedIP.Kind {
-		t.Fatalf("the ReservedIP CRD is not the embedded one, or is not labelled: %v %v", crd.Labels, crd.Spec.Names)
+	if crd.Spec.Group != NewGroup || crd.Spec.Names.Kind != kindReservedIP.Kind {
+		t.Fatalf("the ReservedIP CRD is not the embedded one: %v", crd.Spec.Names)
 	}
 	if err := (installNewCrds{}).Rollback(context.Background(), handle); err != nil {
 		t.Fatal(err)
@@ -152,9 +147,9 @@ func TestInstallNewCrdsNeedsTheMode(t *testing.T) {
 }
 
 func TestInstallNewCrdsRefusesTheOtherModesSet(t *testing.T) {
-	handle, _ := (&crdFixture{mode: cluster.ModeProduction, existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmNet, true, true)}}).handle(t)
+	handle, _ := (&crdFixture{mode: cluster.ModeProduction, existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmNet)}}).handle(t)
 	err := (installNewCrds{}).Execute(context.Background(), handle)
-	if err == nil || !strings.Contains(err.Error(), kindDanmNet.NewCrdName()+" belongs to the other deployment mode") {
+	if err == nil || !strings.Contains(err.Error(), kindDanmNet.NewCrdName()+" of the other mode") {
 		t.Fatalf("installing next to the other mode's CRD returned %v", err)
 	}
 	if len(newGroupCrds(t, handle)) != 1 {
@@ -162,19 +157,8 @@ func TestInstallNewCrdsRefusesTheOtherModesSet(t *testing.T) {
 	}
 }
 
-func TestInstallNewCrdsRefusesForeignCrds(t *testing.T) {
-	handle, _ := (&crdFixture{mode: cluster.ModeLightweight, existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmEp, false, true)}}).handle(t)
-	err := (installNewCrds{}).Execute(context.Background(), handle)
-	if err == nil || !strings.Contains(err.Error(), "was not installed by plan") {
-		t.Fatalf("installing over a foreign CRD returned %v", err)
-	}
-	if detectCrds(t, handle) != engine.StateNotStarted {
-		t.Fatal("a foreign CRD reads as installed by step 2")
-	}
-}
-
 func TestInstallNewCrdsCompletesAPartialSet(t *testing.T) {
-	handle, _ := (&crdFixture{mode: cluster.ModeLightweight, existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmEp, true, true)}}).handle(t)
+	handle, _ := (&crdFixture{mode: cluster.ModeLightweight, existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmEp)}}).handle(t)
 	if detectCrds(t, handle) != engine.StatePartial {
 		t.Fatal("a partial set does not read as partial")
 	}
@@ -205,7 +189,7 @@ func TestRollbackRefusesCrdsHoldingObjects(t *testing.T) {
 	}}
 	fixture := &crdFixture{
 		mode:     cluster.ModeLightweight,
-		existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmEp, true, true), newCrd(kindDanmNet, true, true)},
+		existing: []*apiextensionsv1.CustomResourceDefinition{newCrd(kindDanmEp), newCrd(kindDanmNet)},
 		objects:  []k8sruntime.Object{ep},
 	}
 	handle, _ := fixture.handle(t)

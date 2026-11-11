@@ -13,6 +13,7 @@ import (
 	"github.com/danm-cni/danm-utils/pkg/dma/engine"
 	_ "github.com/danm-cni/danm-utils/pkg/dma/plans/v43to44"
 	"github.com/spf13/cobra"
+	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 var (
@@ -27,6 +28,7 @@ type globalFlags struct {
 	payloadRoot      string
 	imageOverrides   []string
 	workloads        []string
+	cniSubject       string
 	mode             string
 	dryRun           bool
 	force            bool
@@ -66,6 +68,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().StringVar(&flags.payloadRoot, "payload-root", "/payload", "directory inside the assistant's image holding the CNI binaries of each target release")
 	root.PersistentFlags().StringArrayVar(&flags.imageOverrides, "image", nil, "full image URL override for one component, as component=image, repeatable")
 	root.PersistentFlags().StringArrayVar(&flags.workloads, "workload", nil, "workload of one component, as component=<Kind>/<namespace>/<name> where Kind is DaemonSet or Deployment, repeatable")
+	root.PersistentFlags().StringVar(&flags.cniSubject, "cni-subject", "", "identity the DANM CNI binary authenticates as, as ServiceAccount/<namespace>/<name> or User/<name>")
 	root.PersistentFlags().StringVar(&flags.mode, "mode", "", "override the detected DANM deployment mode, either lightweight or production")
 	root.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "describe what would happen without changing anything")
 	root.PersistentFlags().BoolVar(&flags.force, "force", false, "run a reversible step before its predecessors are done, never relaxes a confirmation, a rollback or an irreversible step")
@@ -261,6 +264,14 @@ func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confir
 		}
 		workloads[component] = ref
 	}
+	var cniSubject *rbacv1.Subject
+	if flags.cniSubject != "" {
+		subject, err := cluster.ParseSubject(flags.cniSubject)
+		if err != nil {
+			return nil, err
+		}
+		cniSubject = &subject
+	}
 	mode, err := cluster.ParseMode(flags.mode)
 	if err != nil {
 		return nil, err
@@ -273,6 +284,7 @@ func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confir
 		PayloadRoot: flags.payloadRoot,
 		Overrides:   overrides,
 		Workloads:   workloads,
+		CniSubject:  cniSubject,
 		Options: cluster.Options{
 			DryRun:             flags.dryRun,
 			Force:              flags.force,

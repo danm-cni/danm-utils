@@ -46,6 +46,9 @@ func (installNewCrds) Detect(ctx context.Context, handle *cluster.Handle) (engin
 		return engine.StatePartial, nil
 	}
 	targets := targetKinds(handle.Mode)
+	if !anyInstalled(installed, targets) {
+		return engine.StateNotStarted, nil
+	}
 	if len(installed) != len(targets) {
 		return engine.StatePartial, nil
 	}
@@ -76,14 +79,7 @@ func (step installNewCrds) Execute(ctx context.Context, handle *cluster.Handle) 
 		return err
 	}
 	for _, kind := range missing {
-		crd := manifests[kind].DeepCopy()
-		labels := crd.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[PlanLabel] = PlanID
-		crd.SetLabels(labels)
-		if _, err := handle.ApiExt.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, crd, metav1.CreateOptions{}); err != nil {
+		if _, err := handle.ApiExt.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, manifests[kind], metav1.CreateOptions{}); err != nil {
 			return revertNewCrds(handle, fmt.Errorf("cannot create CRD %s: %w", kind.NewCrdName(), err))
 		}
 		handle.Printf("Created CRD %s.", kind.NewCrdName())
@@ -107,7 +103,7 @@ func (installNewCrds) verifyNewGroup(ctx context.Context, handle *cluster.Handle
 	problems := []string{}
 	missing := []apiKind{}
 	for _, kind := range newKinds {
-		crd, err := handle.ApiExt.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, kind.NewCrdName(), metav1.GetOptions{})
+		_, err := handle.ApiExt.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, kind.NewCrdName(), metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			if wanted[kind] {
 				missing = append(missing, kind)
@@ -117,15 +113,12 @@ func (installNewCrds) verifyNewGroup(ctx context.Context, handle *cluster.Handle
 		if err != nil {
 			return nil, fmt.Errorf("cannot read CRD %s: %w", kind.NewCrdName(), err)
 		}
-		switch {
-		case !wanted[kind]:
-			problems = append(problems, fmt.Sprintf("CRD %s belongs to the other deployment mode than %s", kind.NewCrdName(), handle.Mode))
-		case crd.GetLabels()[PlanLabel] != PlanID:
-			problems = append(problems, fmt.Sprintf("CRD %s already exists and was not installed by plan %s", kind.NewCrdName(), PlanID))
+		if !wanted[kind] {
+			problems = append(problems, kind.NewCrdName())
 		}
 	}
 	if len(problems) > 0 {
-		return nil, fmt.Errorf("the danm.io group cannot be installed, remove or explain these CRDs first:\n  - %s", strings.Join(problems, "\n  - "))
+		return nil, fmt.Errorf("the danm.io group cannot be installed in %s mode, as CRDs %s of the other mode exist", handle.Mode, strings.Join(problems, ", "))
 	}
 	return missing, nil
 }
@@ -140,11 +133,18 @@ func installedNewCrds(ctx context.Context, handle *cluster.Handle) (map[apiKind]
 		if err != nil {
 			return nil, fmt.Errorf("cannot read CRD %s: %w", kind.NewCrdName(), err)
 		}
-		if crd.GetLabels()[PlanLabel] == PlanID {
-			installed[kind] = crd
-		}
+		installed[kind] = crd
 	}
 	return installed, nil
+}
+
+func anyInstalled(installed map[apiKind]*apiextensionsv1.CustomResourceDefinition, kinds []apiKind) bool {
+	for _, kind := range kinds {
+		if _, found := installed[kind]; found {
+			return true
+		}
+	}
+	return false
 }
 
 func crdCondition(crd *apiextensionsv1.CustomResourceDefinition, conditionType apiextensionsv1.CustomResourceDefinitionConditionType) bool {
