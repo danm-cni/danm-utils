@@ -31,6 +31,7 @@ type globalFlags struct {
 	dryRun           bool
 	force            bool
 	acceptDefaultMtu bool
+	acceptPruned     bool
 	noCanary         bool
 	binaryImage      string
 	stepTimeout      time.Duration
@@ -69,6 +70,7 @@ func newRootCommand() *cobra.Command {
 	root.PersistentFlags().BoolVar(&flags.dryRun, "dry-run", false, "describe what would happen without changing anything")
 	root.PersistentFlags().BoolVar(&flags.force, "force", false, "run a reversible step before its predecessors are done, never relaxes a confirmation, a rollback or an irreversible step")
 	root.PersistentFlags().BoolVar(&flags.acceptDefaultMtu, "accept-default-mtu", false, "accept that untagged networks are migrated with the default MTU of 1500")
+	root.PersistentFlags().BoolVar(&flags.acceptPruned, "accept-pruned-fields", false, "accept that fields the target schema does not know are dropped from the migrated objects, recorded once by preflight")
 	root.PersistentFlags().BoolVar(&flags.noCanary, "no-canary", false, "skip the single node trial run before a fleet wide CNI binary rollout")
 	root.PersistentFlags().StringVar(&flags.binaryImage, "binary-image", "", "image to copy the CNI binaries from, instead of the assistant's own image")
 	root.PersistentFlags().DurationVar(&flags.stepTimeout, "step-timeout", 30*time.Minute, "how long a single step may run")
@@ -272,13 +274,14 @@ func newRunner(ctx context.Context, plan engine.Plan, flags *globalFlags, confir
 		Overrides:   overrides,
 		Workloads:   workloads,
 		Options: cluster.Options{
-			DryRun:           flags.dryRun,
-			Force:            flags.force,
-			AcceptDefaultMtu: flags.acceptDefaultMtu,
-			NoCanary:         flags.noCanary,
-			BinaryImage:      flags.binaryImage,
-			StepTimeout:      flags.stepTimeout,
-			RolloutTimeout:   flags.rolloutTimeout,
+			DryRun:             flags.dryRun,
+			Force:              flags.force,
+			AcceptDefaultMtu:   flags.acceptDefaultMtu,
+			AcceptPrunedFields: flags.acceptPruned,
+			NoCanary:           flags.noCanary,
+			BinaryImage:        flags.binaryImage,
+			StepTimeout:        flags.stepTimeout,
+			RolloutTimeout:     flags.rolloutTimeout,
 		},
 		Out: os.Stdout,
 	})

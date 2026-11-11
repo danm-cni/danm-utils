@@ -89,6 +89,9 @@ func (report *Report) Render(out io.Writer) {
 	}
 	report.renderImages(out)
 	report.renderWorkloads(out)
+	if report.Record != nil && report.Record.PrunedFieldsAccepted {
+		fmt.Fprintf(out, "Pruned fields: accepted, %d objects lose fields the target schema does not know\n", report.Record.PrunedObjects)
+	}
 	if report.Record != nil {
 		fmt.Fprintf(out, "Last executed step: %s\n", lastExecutedText(report.Record))
 	}

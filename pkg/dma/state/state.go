@@ -64,10 +64,12 @@ type PlanRecord struct {
 	BinaryPayload string            `json:"binaryPayload,omitempty"`
 	// LastExecutedStep is the ID of the most recently executed step, and the only step
 	// rollback will accept.
-	LastExecutedStep int                       `json:"lastExecutedStep"`
-	Workloads        map[string]WorkloadRecord `json:"workloads,omitempty"`
-	Steps            []StepRecord              `json:"steps,omitempty"`
-	UpdatedAt        string                    `json:"updatedAt,omitempty"`
+	LastExecutedStep     int                       `json:"lastExecutedStep"`
+	Workloads            map[string]WorkloadRecord `json:"workloads,omitempty"`
+	PrunedFieldsAccepted bool                      `json:"prunedFieldsAccepted,omitempty"`
+	PrunedObjects        int                       `json:"prunedObjects,omitempty"`
+	Steps                []StepRecord              `json:"steps,omitempty"`
+	UpdatedAt            string                    `json:"updatedAt,omitempty"`
 }
 
 // Step returns the record of the given step, or nil when the step was never touched.

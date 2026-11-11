@@ -686,6 +686,24 @@ not about to create the opposite mode's set in the new group.
 
 Rollback deletes the new CRDs, which is safe while they hold no objects.
 
+Implementation notes:
+
+- The mode is the one recorded by step 1, or `--mode` when step 2 is forced ahead of step 1; with
+  neither the step fails.
+- Every CRD the step creates carries the label `dma.danm.io/plan: 4.3-to-4.4`. A `danm.io` CRD
+  without it was not installed by `dma`, and the step refuses to proceed while one exists among the
+  target set, as it does while any CRD of the other mode exists in the new group. Both checks run
+  before anything is created.
+- `Detect` counts labelled CRDs only: none is `NotStarted`, the full target set with every member
+  `Established` is `Done`, anything else is `Partial`. A retry after a partial run creates only the
+  missing members.
+- The set is gated on every member reaching `Established` within 30 seconds; a member whose
+  `NamesAccepted` condition turns false fails immediately. On any failure while creating or waiting,
+  every labelled CRD is deleted again, in either mode.
+- Rollback, and the revert on failure, delete only labelled CRDs, and only after confirming that none
+  of them holds an object; otherwise nothing is deleted. They wait until the deleted CRDs are gone,
+  so that the step can run again at once.
+
 ### Step 3: `install-new-rbac`
 
 Adds ClusterRoles and ClusterRoleBindings for the new group alongside the existing ones, covering
