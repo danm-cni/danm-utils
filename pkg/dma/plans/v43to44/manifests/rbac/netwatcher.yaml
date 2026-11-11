@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: danm:netwatcher-4.4
+rules:
+- apiGroups:
+  - danm.io
+  resources:
+  - danmnets
+  - clusternetworks
+  - clusternetworks/status
+  - tenantnetworks
+  - tenantnetworks/status
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+- apiGroups:
+  - k8s.cni.cncf.io
+  resources:
+  - network-attachment-definitions
+  verbs:
+  - get
+  - list
+  - watch
+  - update

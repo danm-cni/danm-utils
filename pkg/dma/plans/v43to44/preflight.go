@@ -549,18 +549,6 @@ func (check *preflight) verifyRipTags(ctx context.Context) error {
 	for _, problem := range problems {
 		check.fail("%s", problem)
 	}
-	for _, rip := range rips {
-		existing, err := check.handle.Dynamic.Resource(kindReservedIP.NewResource()).Namespace(rip.Namespace).Get(ctx, rip.Name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("cannot read ReservedIP %s/%s: %w", rip.Namespace, rip.Name, err)
-		}
-		if existing.GetLabels()[PlanLabel] != PlanID {
-			check.fail("ReservedIP %s/%s already exists in the %s group, and was not created by this plan", rip.Namespace, rip.Name, NewGroup)
-		}
-	}
 	check.report.ReservedIPs = len(rips)
 	check.handle.Printf("%d DanmEps are tagged for ReservedIP replication, describing %d ReservedIPs.", len(tagged), len(rips))
 	return nil

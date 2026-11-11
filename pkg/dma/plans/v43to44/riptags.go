@@ -17,7 +17,6 @@ const (
 	RipTagV6       = "dma.danm.io/reserved-ip-v6"
 	SharedRipTagV4 = "dma.danm.io/shared-reserved-ip-v4"
 	SharedRipTagV6 = "dma.danm.io/shared-reserved-ip-v6"
-	PlanLabel      = "dma.danm.io/plan"
 )
 
 var RipTagKeys = []string{RipTagV4, RipTagV6, SharedRipTagV4, SharedRipTagV6}

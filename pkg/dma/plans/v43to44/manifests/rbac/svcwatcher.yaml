@@ -1,0 +1,53 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: danm:svcwatcher-4.4
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  verbs:
+  - list
+  - watch
+  - get
+  - update
+  - create
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - services
+  - pods
+  verbs:
+  - list
+  - watch
+  - get
+- apiGroups:
+  - "coordination.k8s.io"
+  resources:
+  - leases
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - update
+  - get
+- apiGroups:
+  - "danm.io"
+  resources:
+  - danmeps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
