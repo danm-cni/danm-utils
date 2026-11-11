@@ -95,6 +95,7 @@ type PlanMeta struct {
 	// BinaryPayload names the directory of CNI binaries inside the assistant's image which
 	// this plan installs on the nodes. Empty when the plan installs no binaries.
 	BinaryPayload string
+	Workloads     []cluster.ComponentWorkload
 }
 
 // Plan is an ordered list of pre-baked migration steps between two DANM releases.

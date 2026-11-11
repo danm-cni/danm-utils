@@ -48,7 +48,8 @@ structural schemas.
 **This is a data-loss trap.** `v1beta1` CRDs without a structural schema do not prune unknown
 fields, so a 4.3 cluster may be storing fields that the 4.4 schema does not know about. On create
 against the new CRD those fields are silently dropped. Preflight must dry-run every source object
-against the target schema and fail on any field that would be pruned.
+against the target schema and fail on any field that would be pruned, unless the operator accepts the
+loss explicitly with `--accept-pruned-fields` (section 5.9).
 
 ### 2.3 Type changes
 
@@ -369,7 +370,8 @@ resolved binary payload, the detected mode, and the logger.
 ### 5.3 State
 
 State lives in the `kube-system/dma-state` ConfigMap, one key per plan ID. The value is a JSON
-document holding the detected mode, the resolved image references, and one record per step: state,
+document holding the detected mode, the resolved image references, the resolved workload references
+of section 5.8, whether pruned fields were accepted (section 5.9), and one record per step: state,
 `startedAt`, `finishedAt`, the identity that ran it, any error text, the warnings it raised, and the
 workload snapshots it took. A `lastExecutedStep` pointer enforces LIFO rollback.
 
@@ -390,8 +392,8 @@ done.
 Per-object backups are deliberately **not** taken. The convert steps copy rather than move: the
 old-group objects remain untouched and authoritative until step 14, so they are their own backup.
 
-Workload specs that are patched in place (the webhook Deployment, the `netwatcher`, `svcwatcher`
-and `cleaner` DaemonSets, the webhook configurations) **are** snapshotted into the state ConfigMap before
+Workload specs that are patched in place (the `webhook`, `netwatcher`, `svcwatcher` and `cleaner`
+workloads of section 5.8, the webhook configurations) **are** snapshotted into the state ConfigMap before
 patching, because those are genuine in-place mutations. They are small and bounded.
 
 Node-local CNI binaries are backed up on the node itself, next to the original, by the copier
@@ -456,6 +458,112 @@ a multi-architecture `dma` image or a per-architecture `--binary-image`.
 
 `--binary-image` overrides the copier to use an externally built image instead of the `dma` image.
 
+### 5.8 Workload configuration
+
+DANM components are not deployed uniformly: their namespace, name and controller kind differ between
+installations. Every workload a plan inspects or patches is therefore addressed by a reference the
+operator can tailor, never by a hardcoded name.
+
+```go
+type WorkloadKind string // "DaemonSet" or "Deployment"
+
+type WorkloadRef struct {
+    Kind      WorkloadKind
+    Namespace string
+    Name      string
+}
+
+type WorkloadConfig struct {
+    Overrides map[string]WorkloadRef // component name -> reference
+}
+
+type ComponentWorkload struct {
+    Component string
+    Default   WorkloadRef
+    Required  bool
+}
+```
+
+A plan declares its components in `PlanMeta.Workloads []ComponentWorkload`. The runner resolves them
+together with the images before any step runs, so a malformed reference or an undeclared component
+fails every command, including `dma plan`.
+
+A reference is written `<Kind>/<namespace>/<name>`, for example `DaemonSet/danm/netwatcher`. Only
+`DaemonSet` and `Deployment` are accepted, for every component; anything else is a configuration
+error reported before any step runs.
+
+Resolution per component: `Overrides[name]` when set, otherwise the plan's default reference for the
+component. Precedence mirrors images (section 5.6): the repeatable
+`--workload <component>=<Kind>/<namespace>/<name>` flag, then a `workload_<component>` key in the
+`dma-config` ConfigMap, then the plan default. Naming a component the plan does not declare is an
+error, so a typo cannot silently fall back to the default.
+
+```
+# dma-config
+workload_netwatcher: DaemonSet/danm/netwatcher
+workload_webhook: Deployment/danm/danm-webhook
+```
+
+Whether a component is required stays fixed by the plan and cannot be configured. A required
+component whose resolved workload does not exist fails preflight; an optional one is reported and
+skipped by every later step. There is no way to declare a required component absent.
+
+The plan defaults for the 4.3-to-4.4 plan are the names of the DANM and danm-utils manifests:
+
+| Component | Default reference | Required |
+| --- | --- | --- |
+| `webhook` | `Deployment/kube-system/danm-webhook-deployment` | yes |
+| `netwatcher` | `DaemonSet/kube-system/netwatcher` | yes |
+| `svcwatcher` | `DaemonSet/kube-system/svcwatcher` | no |
+| `cleaner` | `DaemonSet/kube-system/danm-cleaner` | no |
+
+Step 1 resolves every component, checks the health of each workload found, and records the resolved
+references in the plan's state record together with whether each workload exists. Every later step
+and every rollback reads the references from state, never from the configuration, so editing
+`dma-config` or passing a different flag mid-plan cannot redirect a patch or a restore to a different
+object. Changing a reference means rolling back to step 1 and running it again. `dma plan` and
+`dma status` print the recorded references once step 1 is done, and the resolved ones before.
+
+Per-kind behaviour of the steps that patch workloads is spelled out where it differs: the health
+check of step 1, the all-at-once roll of `svcwatcher` in step 11.
+
+### 5.9 Accepting pruned fields
+
+The prune check of step 1 (section 2.2) is fatal by default: a field the 4.4 schema does not know
+is silently dropped when the object is created in the new group, and `dma` cannot tell whether
+some other tool relies on it. The usual remedy is to remove the field from the old-group object and
+run step 1 again.
+
+When the operator knows the fields are dead, `--accept-pruned-fields` lets the migration drop them
+instead:
+
+- Step 1 raises every finding as a warning rather than a failure. The warnings name each object and
+  the paths of its pruned fields, capped like any other warning, and every one is printed.
+- Step 1 records the acceptance in the plan's state record, next to the mode, together with the
+  number of objects affected. Later steps read the acceptance from state, never from the flag, so it
+  cannot change mid-plan. Changing the decision means rolling back to step 1 and running it again
+  with or without the flag.
+- The acceptance covers every kind the plan copies, `DanmEp`s included, and every object, including
+  objects created or changed in the old group after step 1. It is all or nothing; there is no
+  per-object or per-field acceptance.
+- `--force` does not imply it, and it does not relax any other check.
+
+Steps 6, 7 and 13 run the same prune check on every object they write, since old-group objects can
+change after step 1:
+
+- Without a recorded acceptance, an object whose copy would lose fields fails the step without its
+  copy being written. The step is resumable once the field is removed from the source.
+- With a recorded acceptance, the fields are pruned from the copy by `dma` itself and reported as
+  warnings, so that what is written is exactly what the API server stores.
+
+Pruning is part of the step 6 transformation, so the match check of steps 6 and 7 and the drift
+detection of step 13 compare pruned forms, and a dropped field never reads as a mismatch or as
+drift.
+
+The old-group objects keep the dropped fields until step 14 deletes them, so they remain the backup
+until then. While an acceptance is recorded, the confirmation prompt of step 14 repeats that the
+fields of the affected objects are lost for good once it runs.
+
 ## 6. CLI
 
 ```
@@ -463,6 +571,7 @@ dma plans                                    list registered plans
 dma plan --from 4.3 --to 4.4                 print the step table for a plan
 dma status                                   state of the in-progress plan
 dma execute  --plan 4.3-to-4.4 --step 6
+dma execute  --plan 4.3-to-4.4 --step 1 --workload netwatcher=DaemonSet/danm/netwatcher
 dma rollback --plan 4.3-to-4.4 --step 6
 dma mtu list
 dma mtu set   <kind>/<ns>/<name> <value>
@@ -482,6 +591,9 @@ that changes to the old API group are no longer carried over.
 
 `dma rollback` is strict LIFO: only the most recently executed step may be rolled back, and only if
 it is reversible. Unwinding further means repeating the command. `--force` does not relax this.
+
+`--accept-default-mtu` and `--accept-pruned-fields` each turn one fatal finding of step 1 into a
+warning; see sections 4.4 and 5.9. Neither is relaxed by `--force`.
 
 `--force` relaxes only the predecessor check of `dma execute`, and never for an irreversible step:
 cleanup always requires every earlier step to be `Done`.
@@ -510,12 +622,12 @@ step 4.
 
 ### Step 1: `verify-source-cluster`
 
-Read-only. Asserts that the API server serves `apiextensions.k8s.io/v1` and
-`admissionregistration.k8s.io/v1`; that the old-group CRDs are present and at the 4.3 shape; that
+Read-only. Asserts that the old-group CRDs are present and at the 4.3 shape; that
 `netwatcher`, `svcwatcher` (if deployed), `cleaner` (if deployed) and the webhook are healthy.
 Detects and records the deployment mode, failing if both `DanmNet` and the production kinds exist.
 Inventories and counts every object per kind. Dry-runs every source object against the target
-structural schema and fails on any field that would be pruned. Classifies every network for MTU
+structural schema and fails on any field that would be pruned unless `--accept-pruned-fields` is
+given (section 5.9). Classifies every network for MTU
 risk and fails on an untagged IPVLAN network unless `--accept-default-mtu` is given. Resolves all
 component images, the pull secret, and the binary payload, and checks node architectures.
 
@@ -527,6 +639,38 @@ the `vniRange` is trimmed. `dma` only reports; it does not fix.
 
 It validates the ReservedIP replication tags already present on `DanmEp`s with the checks of
 step 9, and in lightweight mode fails on any such tag.
+
+Implementation notes:
+
+- Every check runs even after an earlier one failed, so the operator sees all problems at once. An
+  error talking to the API server stops the step; a finding about the cluster does not.
+- The pruning dry-run cannot be done by the API server, since the `danm.io` CRDs are not installed
+  yet. It runs locally: each source object is pruned with the apiextensions pruning algorithm
+  against the structural schema of the embedded 4.4 CRD of its kind and mode (A.3). With
+  `--accept-pruned-fields` the findings are raised as warnings instead, and the acceptance is
+  recorded in state (section 5.9).
+- Mode detection: `DanmNet` marks lightweight, any of `TenantNetwork`, `ClusterNetwork` and
+  `TenantConfig` marks production, and every CRD of the detected mode must then be present, at
+  group `danm.k8s.io`, the expected kind and scope, with `v1` served and stored. When both sets are
+  installed, `--mode` together with `--force` migrates the named one and leaves the other in place.
+- Health: each component's workload is resolved as in section 5.8. The `webhook` and `netwatcher`
+  workloads must exist; `svcwatcher` and `cleaner` are optional. A workload is healthy when its
+  latest generation is observed and every desired Pod is updated and ready: for a DaemonSet,
+  `updatedNumberScheduled` and `numberReady` equal `desiredNumberScheduled` with none unavailable;
+  for a Deployment, `updatedReplicas` and `availableReplicas` equal `spec.replicas` with none
+  unavailable. The resolved references and their presence are recorded in state with the mode.
+- An MTU tag must be an integer between 68 (1280 for a network with IPv6) and 65535 minus the VxLAN
+  overhead of section 4.4. An invalid tag fails preflight on any network type, not only IPVLAN.
+- A ReservedIP name must be both a valid label value, as the 4.4 webhook demands, and a valid object
+  name.
+- The VLAN limit of 4094 is mirrored as a constant: DANM's `pkg/admit` depends on far more than `dma`
+  needs.
+- With `--binary-image` the payload and node architecture checks are skipped, as the binaries are not
+  in the `dma` image.
+- On success the step stores a report (mode, inventory counts, MTU-at-risk count, ReservedIP count,
+  payload architecture) in its state record, and records the mode in the plan record. `Detect` reads
+  the step as `Done` only when both are present, since the runner itself records a `--mode` value
+  before a step runs. Rollback forgets the mode, so the next run detects it again.
 
 ### Step 2: `install-new-crds`
 
@@ -663,6 +807,8 @@ Transformation rules:
   that must not drift
 - apply the `dma.danm.io/mtu` tag to `Spec.Options.Mtu`, then strip the annotation from the copy
 - leave `Status.ReservedIPs` empty, as 4.3 has no counterpart
+- drop every field the 4.4 schema prunes, only when step 1 recorded an acceptance of pruned fields;
+  without one, such an object fails the step instead (section 5.9)
 - for every `TenantConfig` `HostDevices` entry of `vniType: vxlan`, resize the `alloc` bitmask to
   `MaxAllowedVniVxlan + 1` = 100001 bits, keeping every set bit (section 2.4): decode with
   `bitarray.NewBitArrayFromBase64`, create the target with `bitarray.NewBitArray`, set each bit that
@@ -804,7 +950,7 @@ not live at that point, so nothing tries to validate the deletions.
 
 ### Step 10: `deploy-new-webhook`
 
-Patches the webhook Deployment to the resolved 4.4 image, and replaces the
+Patches the `webhook` workload recorded by step 1 to the resolved 4.4 image, and replaces the
 `MutatingWebhookConfiguration` with the `admissionregistration.k8s.io/v1` form carrying the four
 hooks of section 2.5: `danm-netvalidation.danm.io`, `danm-configvalidation.danm.io`,
 `danm-netdeletion.danm.io` and `reservedipvalidation.danm.io`, with `sideEffects` and
@@ -820,8 +966,9 @@ auto-reverts to the snapshot on timeout, which is the real defence against a mis
 
 ### Step 11: `roll-control-plane`
 
-Patches the `netwatcher` DaemonSet, and `svcwatcher` and `cleaner` if they are deployed, to their
-resolved 4.4 images. Components that are not present are skipped and reported, not created:
+Patches the `netwatcher` workload recorded by step 1, and the `svcwatcher` and `cleaner` workloads
+if step 1 found them, to their resolved 4.4 images. Components that are not present are skipped and
+reported, not created:
 `svcwatcher` and `cleaner` are optional in both modes.
 
 Changing the image alone is not enough; each template is brought to its 4.4 form:
@@ -836,8 +983,10 @@ Changing the image alone is not enough; each template is brought to its 4.4 form
   one. With only the new key the Pod would silently fall back to the default network until step 12.
   The old key is removed in step 14.
 
-`svcwatcher` is rolled all at once, with its `updateStrategy` temporarily set to
-`maxUnavailable: 100%` and restored from the snapshot afterwards. A rolling update would leave 4.3
+`svcwatcher` is rolled all at once, and its rollout strategy is restored from the snapshot
+afterwards. A DaemonSet gets its `updateStrategy` temporarily set to `RollingUpdate` with
+`maxUnavailable: 100%` and `maxSurge: 0`; a Deployment gets its `strategy` temporarily set to
+`Recreate`, which removes every old Pod before creating a new one. A rolling update would leave 4.3
 replicas, which all write Endpoints, running next to the 4.4 leader, which re-syncs all of them,
 with the two versions resolving the dual-annotated Services of step 8 against different `DanmEp`
 groups. Rolling all at once leaves a few seconds with no `svcwatcher` at all; Endpoints keep their
@@ -924,6 +1073,9 @@ Runs in this order:
    binary
 4. removes the node-local `.dma-bak-<planID>` files via one final copier run
 
+When step 1 recorded an acceptance of pruned fields, the confirmation prompt states how many objects
+lose fields for good, since the old-group objects deleted here are their last copy (section 5.9).
+
 **Irreversible.** Requires the plan ID as its typed confirmation token, and refuses to run unless
 steps 1 to 13 are all `Done`, every node reports the new binary installed, no Pod carries only the
 old annotation, and no template of a component rolled in step 11 carries only the old key. A node
@@ -979,33 +1131,29 @@ repository alone. An implementer starting from a clean context needs these.
 A local clone of the DANM project exists at `/home/levo/work/danm`.
 
 - 4.3 is the `v4.3.0` tag.
-- 4.4 is the `master` branch HEAD, at the time of writing commit `1066d6f` ("Fixing accidental usage
-  of danm.k8s.io usage in RIP annotations").
+- 4.4 is the `master` branch HEAD, at the time of writing commit `2ea72cb` ("Replace DanmEp
+  selectableFields with label based filtering").
 
-Every delta documented in section 2 was derived by diffing those two revisions, with one addition.
-`DanmEp` ReservedIP labels (section 2.3) come from the change "Replace DanmEp selectableFields with
-label based filtering", which at the time of writing is not yet on `master`. The Go module cache
+Every delta documented in section 2 was derived by diffing those two revisions. The Go module cache
 contains only the single pinned commit, so the clone is required to inspect 4.3 at all.
 
-### A.2 The `go.mod` pin is behind master and must be bumped
+### A.2 The `go.mod` pin follows the 4.4 baseline
 
-`danm-utils/go.mod` currently pins:
+`danm-utils/go.mod` pins the 4.4 baseline of A.1:
 
 ```
-github.com/danm-cni/danm v0.0.0-20261019102013-49025e3f2622
+github.com/danm-cni/danm v0.0.0-20261111105820-2ea72cb3eb13
 ```
 
-That is commit `49025e3` ("Adding ReservedIP integration tests"). It contains the ReservedIP API, the
-`DanmEp` ReservedIP references and the `GarbageCollectIps` based freeing `cleaner` depends on. It
-does **not** contain the netwatcher and svcwatcher refactors, a `pkg/cnidel` change that ends up in
-the `danm` binary, the October 2026 security updates, or the `danm.io` ReservedIP label fix.
+It contains the ReservedIP API, the `GarbageCollectIps` based freeing `cleaner` depends on, the
+netwatcher and svcwatcher refactors, the October 2026 security updates, the `danm.io` ReservedIP
+label fix, and the label based `isAddressShared`. Neither the embedded CRDs nor the payload binaries
+need CRD field selectors any more.
 
-The `/payload/4.4` binaries are built from the pinned module (section 5.7), so a stale pin ships a
-stale CNI binary. **Bump `go.mod` to `v0.0.0-20261102135228-1066d6f3c51a` before building the
-payload**, and again whenever the 4.4 baseline in A.1 moves. In particular the pin must move again
-once the label based filtering change lands on `master`. Until then the payload ships the `selectableFields` based
-`isAddressShared` instead. On a cluster without CRD field selectors its list call fails, the error
-is discarded, and a shared ReservedIP address is freed while other `DanmEp`s still use it.
+The `/payload/4.4` binaries are built from the pinned module (section 5.7), and the embedded CRDs are
+copied from the same commit (A.3), so a stale pin ships a stale CNI binary and stale schemas. **Bump
+`go.mod` and refresh the embedded CRDs together whenever the 4.4 baseline in A.1 moves.** A unit test
+of the plan fails if an embedded CRD declares `selectableFields` again.
 
 ### A.3 Where the embedded artifacts come from
 
@@ -1020,6 +1168,9 @@ is discarded, and a shared ReservedIP address is freed while other `DanmEp`s sti
 | netwatcher RBAC and template | DANM `integration/manifests/netwatcher/{0netwatcher_rbac,netwatcher_ds}.yaml` |
 | svcwatcher RBAC and template | DANM `integration/manifests/svcwatcher/{0svcwatcher_rbac,svcwatcher_ds}.yaml` |
 | cleaner RBAC | danm-utils `integration/manifests/cleaner/cleaner.yaml` |
+
+The CRDs are embedded verbatim under `pkg/dma/plans/v43to44/manifests/crds/<mode>/`. Step 1 reads
+their schemas for its pruning check, step 2 applies them.
 
 The `.yaml.tmpl` variants use `confd`-style `getenv` interpolation for the image reference. `dma`
 resolves images itself (section 5.6) and so embeds the plain `.yaml` forms, patching the image
@@ -1079,10 +1230,18 @@ Recorded here so they are not relitigated:
 - `svcwatcher` is rolled all at once, never mixing 4.3 and 4.4 replicas.
 - TenantConfig `alloc` bitmasks are resized to 100001 bits for `vxlan` entries only; `vlan` entries
   keep their 4.3 size. Preflight hard-fails on a `vlan` `vniRange` above 4094.
-- No Kubernetes version check beyond the `v1` APIs asserted by preflight: 4.4 finds the users of a
-  ReservedIP through `DanmEp` labels, not CRD field selectors.
+- No Kubernetes version or API availability check at all: 4.4 finds the users of a ReservedIP
+  through `DanmEp` labels, not CRD field selectors, and the `apiextensions.k8s.io/v1` and
+  `admissionregistration.k8s.io/v1` APIs it needs have been GA since Kubernetes 1.16.
 - Neither API group is locked during the migration. Non-IPAM changes made to the old group after
   step 6 are lost; step 6 warns about this, and step 13 reports the changes it dropped.
 - Step 14 removes the old webhook configuration before deleting the old CRDs. The annotation shim
   stays after the plan completes, and is removed with `dma shim remove` once no workload template
   carries only the old key.
+- Component workloads are tailorable by `<Kind>/<namespace>/<name>` reference, through a
+  `workload_<component>` key in `dma-config` or the `--workload` flag, with the plan's manifest names
+  as defaults (section 5.8). Every component may be a DaemonSet or a Deployment. Which components are
+  required is fixed by the plan. References are resolved once by step 1 and read from state afterwards.
+- Preflight hard-fails on any field the 4.4 schema would prune, overridable with
+  `--accept-pruned-fields`. The acceptance is all or nothing, recorded in state by step 1, applies to
+  every later copy and resync, and is not implied by `--force` (section 5.9).
