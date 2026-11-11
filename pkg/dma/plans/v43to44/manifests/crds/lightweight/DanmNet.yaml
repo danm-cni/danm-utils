@@ -1,0 +1,164 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: danmnets.danm.io
+spec:
+  group: danm.io
+  names:
+    kind: DanmNet
+    listKind: DanmNetList
+    plural: danmnets
+    singular: danmnet
+    shortNames:
+    - dn
+    - dnet
+  scope: Namespaced
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              AllowedTenants:
+                items:
+                  type: string
+                type: array
+              NetworkID:
+                type: string
+              NetworkType:
+                type: string
+              Options:
+                properties:
+                  alloc:
+                    description: bit array of tracking address allocation
+                    type: string
+                  alloc6:
+                    description: bit array tracking IPv6 allocations
+                    type: string
+                  allocation_pool:
+                    description: subset of the IPv4 subnet from which IPs can be allocated
+                    type: object
+                    properties:
+                      end:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: ipv4
+                      lastIp:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: cidr
+                          pattern: ^\d+\.
+                      start:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: ipv4
+                  allocation_pool_v6:
+                    description: subset of the IPv6 subnet from which IPs can be allocated
+                    type: object
+                    properties:
+                      end:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: ipv6
+                      lastIp:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: cidr
+                          pattern: ':'
+                      start:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: ipv6
+                      cidr:
+                        type: string
+                        oneOf:
+                        - maxLength: 0
+                        - format: cidr
+                          pattern: ':'
+                  cidr:
+                    description: IPv4 specific parameters IPv4 network address
+                    type: string
+                    oneOf:
+                    - maxLength: 0
+                    - format: cidr
+                      pattern: ^\d+\.
+                  container_prefix:
+                    description: The name of the interface in the container
+                    type: string
+                  device_pool:
+                    description: The resource_pool contains allocated device IDs
+                    type: string
+                  host_device:
+                    description: The device to where the network is attached
+                    type: string
+                  mtu:
+                    description: The maximum packet size containers connecting to this network are allowed to transmit while using the Linux IP stack
+                    type: integer
+                    minimum: 1280
+                    maximum: 9000
+                  net6:
+                    description: IPv6 specific parameters IPv6 unique global address prefix
+                    type: string
+                    oneOf:
+                    - maxLength: 0
+                    - format: cidr
+                      pattern: ':'
+                  routes:
+                    additionalProperties:
+                      type: string
+                    description: IPv4 routes for this network
+                    type: object
+                  routes6:
+                    additionalProperties:
+                      type: string
+                    description: IPv6 routes for this network
+                    type: object
+                  rt_tables:
+                    description: Routing table number for policy routing
+                    type: integer
+                    format: int32
+                    minimum: 0
+                    maximum: 255
+                  vlan:
+                    description: the VLAN id of the VLAN interface created on top
+                      of the host device
+                    type: integer
+                    format: int32
+                    minimum: 1
+                    maximum: 4094
+                  vxlan:
+                    description: the vxlan id on the host device (creation of vxlan
+                      interface)
+                    type: integer
+                    format: int32
+                    minimum: 1
+                    maximum: 16777214
+                type: object
+            required:
+            - NetworkID
+            type: object
+        required:
+        - metadata
+        - spec
+        type: object
+    served: true
+    storage: true

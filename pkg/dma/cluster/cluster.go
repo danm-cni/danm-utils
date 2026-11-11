@@ -76,7 +76,8 @@ type Handle struct {
 	// Images is the resolution rule set, not the resolved references. Steps resolve the
 	// components they need, so that a plan declaring more components than a step rolls does
 	// not force every step to care.
-	Images ImageConfig
+	Images    ImageConfig
+	Workloads WorkloadConfig
 	// Mode is authoritative for the whole plan once preflight has recorded it.
 	Mode Mode
 	// PayloadRoot is the directory inside the assistant's own image holding the CNI binaries
@@ -105,6 +106,7 @@ type Config struct {
 	ConfigName  string
 	PayloadRoot string
 	Overrides   map[string]ComponentImage
+	Workloads   map[string]WorkloadRef
 	Options     Options
 	Out         io.Writer
 }
@@ -141,6 +143,10 @@ func New(ctx context.Context, config Config) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
+	workloads, err := LoadWorkloadConfig(ctx, kubeClient, config.Namespace, config.ConfigName)
+	if err != nil {
+		return nil, err
+	}
 	return &Handle{
 		Kube:        kubeClient,
 		ApiExt:      apiExtClient,
@@ -149,6 +155,7 @@ func New(ctx context.Context, config Config) (*Handle, error) {
 		RestConfig:  restConfig,
 		State:       state.NewStore(kubeClient, config.Namespace, config.StateName),
 		Images:      images.WithOverrides(config.Overrides),
+		Workloads:   workloads.WithOverrides(config.Workloads),
 		PayloadRoot: config.PayloadRoot,
 		Namespace:   config.Namespace,
 		Operator:    operator(),

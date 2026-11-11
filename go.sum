@@ -10,8 +10,8 @@ github.com/containernetworking/plugins v1.9.1 h1:8oU6WsIsU3bpnNZuvHp74a6cE1MJwbj
 github.com/containernetworking/plugins v1.9.1/go.mod h1:fj7kS55qg3o/RgS+WGsF3+ZxwIImMPusQZKzBpcSr4c=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/danm-cni/danm v0.0.0-20261102135228-1066d6f3c51a h1:6yfxlXKiRzpz7g5JnV/JuaNPglnJY+2drbPrYtZXIoQ=
-github.com/danm-cni/danm v0.0.0-20261102135228-1066d6f3c51a/go.mod h1:fKP6t5cDkTx5/kE/RnUfqRAGwdwL9xuf7y+adhXQW3U=
+github.com/danm-cni/danm v0.0.0-20261111105820-2ea72cb3eb13 h1:bvPR4gukMBgC9JjQci+eV7UjC+AfajKibom/G700bqM=
+github.com/danm-cni/danm v0.0.0-20261111105820-2ea72cb3eb13/go.mod h1:fKP6t5cDkTx5/kE/RnUfqRAGwdwL9xuf7y+adhXQW3U=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

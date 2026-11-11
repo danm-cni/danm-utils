@@ -201,6 +201,9 @@ func (runner *Runner) prepare(ctx context.Context) (map[string]cluster.Component
 	if err != nil {
 		return nil, err
 	}
+	if _, err := runner.Handle.Workloads.ResolveAll(meta.Workloads); err != nil {
+		return nil, err
+	}
 	planRecord, err := runner.Handle.State.Load(ctx, meta.ID)
 	if err != nil {
 		return nil, err

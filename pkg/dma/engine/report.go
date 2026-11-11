@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/danm-cni/danm-utils/pkg/dma/cluster"
@@ -19,13 +20,22 @@ type StepRow struct {
 	Record   *state.StepRecord
 }
 
+type WorkloadRow struct {
+	Component string
+	Ref       cluster.WorkloadRef
+	Required  bool
+	Recorded  bool
+	Present   bool
+}
+
 // Report is the reviewable view of a plan against a live cluster.
 type Report struct {
-	Plan   PlanMeta
-	Mode   cluster.Mode
-	Images map[string]cluster.ComponentImage
-	Record *state.PlanRecord
-	Rows   []StepRow
+	Plan      PlanMeta
+	Mode      cluster.Mode
+	Images    map[string]cluster.ComponentImage
+	Record    *state.PlanRecord
+	Workloads []WorkloadRow
+	Rows      []StepRow
 	// Advisories are the standing warnings of the plan which apply in its current state.
 	Advisories []string
 }
@@ -44,7 +54,11 @@ func (runner *Runner) Report(ctx context.Context) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	report := &Report{Plan: planMeta, Mode: runner.Handle.Mode, Images: images, Record: planRecord}
+	workloads, err := workloadRows(runner.Handle.Workloads, planMeta.Workloads, planRecord)
+	if err != nil {
+		return nil, err
+	}
+	report := &Report{Plan: planMeta, Mode: runner.Handle.Mode, Images: images, Record: planRecord, Workloads: workloads}
 	for _, step := range runner.Plan.Steps() {
 		meta := step.Meta()
 		detected, err := step.Detect(ctx, runner.Handle)
@@ -74,6 +88,7 @@ func (report *Report) Render(out io.Writer) {
 		fmt.Fprintf(out, "CNI binary payload: %s\n", report.Plan.BinaryPayload)
 	}
 	report.renderImages(out)
+	report.renderWorkloads(out)
 	if report.Record != nil {
 		fmt.Fprintf(out, "Last executed step: %s\n", lastExecutedText(report.Record))
 	}
@@ -116,6 +131,47 @@ func (report *Report) renderImages(out io.Writer) {
 		image := report.Images[component]
 		fmt.Fprintf(out, "  %s: %s (%s)\n", component, image.Image, image.PullPolicy)
 	}
+}
+
+func (report *Report) renderWorkloads(out io.Writer) {
+	if len(report.Workloads) == 0 {
+		return
+	}
+	if report.Workloads[0].Recorded {
+		fmt.Fprintln(out, "Workloads, as recorded by preflight:")
+	} else {
+		fmt.Fprintln(out, "Workloads, as configured, not verified yet:")
+	}
+	for _, row := range report.Workloads {
+		notes := []string{"optional"}
+		if row.Required {
+			notes = []string{"required"}
+		}
+		if row.Recorded && !row.Present {
+			notes = append(notes, "not deployed")
+		}
+		fmt.Fprintf(out, "  %s: %s (%s)\n", row.Component, row.Ref, strings.Join(notes, ", "))
+	}
+}
+
+func workloadRows(config cluster.WorkloadConfig, declared []cluster.ComponentWorkload, record *state.PlanRecord) ([]WorkloadRow, error) {
+	resolved, err := config.ResolveAll(declared)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]WorkloadRow, 0, len(declared))
+	for _, workload := range declared {
+		row := WorkloadRow{Component: workload.Component, Ref: resolved[workload.Component], Required: workload.Required}
+		if record != nil && record.Workloads != nil {
+			if recorded, found := record.Workloads[workload.Component]; found {
+				row.Ref = cluster.RecordedWorkload(recorded)
+				row.Recorded = true
+				row.Present = recorded.Present
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func (report *Report) renderErrors(out io.Writer) {
