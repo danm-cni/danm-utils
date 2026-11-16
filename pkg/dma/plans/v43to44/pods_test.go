@@ -46,7 +46,7 @@ func podHandle(t *testing.T, mode cluster.Mode, pods ...k8sruntime.Object) *clus
 	}
 }
 
-func createReservedIp(t *testing.T, handle *cluster.Handle, namespace, name, networkType, network, sourcePods string, addresses ...string) {
+func createReservedIp(t *testing.T, handle *cluster.Handle, namespace, name, networkType, network string, addresses ...string) {
 	t.Helper()
 	ips := []any{}
 	for _, address := range addresses {
@@ -56,9 +56,8 @@ func createReservedIp(t *testing.T, handle *cluster.Handle, namespace, name, net
 		"apiVersion": NewGroup + "/" + Version,
 		"kind":       kindReservedIP.Kind,
 		"metadata": map[string]any{
-			"namespace":   namespace,
-			"name":        name,
-			"annotations": map[string]any{SourcePodsKey: sourcePods},
+			"namespace": namespace,
+			"name":      name,
 		},
 		"spec": map[string]any{
 			"network": map[string]any{"name": network, "type": networkType},
@@ -99,7 +98,7 @@ func TestAnnotateExistingPods(t *testing.T) {
 		terminatingPod("app", "leaving", map[string]string{OldInterfacesKey: `[{"tenantNetwork":"internal"}]`}),
 		annotatedPod("kube-system", "static-node1", static),
 	)
-	createReservedIp(t, handle, "app", "db", "TenantNetwork", "internal", `[{"namespace":"app","name":"db-0"}]`, "10.0.0.5")
+	createReservedIp(t, handle, "app", "db", "TenantNetwork", "internal", "10.0.0.5")
 	ctx := context.Background()
 	if detectPods(t, handle) != engine.StateNotStarted {
 		t.Fatal("step 5 does not read as not started before it ran")
@@ -115,8 +114,8 @@ func TestAnnotateExistingPods(t *testing.T) {
 		t.Fatalf("Pod app/web-1 carries %v", web)
 	}
 	db := podAnnotations(t, handle, "app", "db-0")
-	if db[NewInterfacesKey] != `[{"tenantNetwork":"internal","ip":"db"}]` {
-		t.Fatalf("the dynamic request of Pod app/db-0 was not mapped to its ReservedIP: %v", db)
+	if db[NewInterfacesKey] != `[{"tenantNetwork":"internal","ip":"dynamic"}]` {
+		t.Fatalf("the dynamic request of Pod app/db-0 was rewritten: %v", db)
 	}
 	if annotations := podAnnotations(t, handle, "app", "fresh"); annotations[CopiedMarkerKey] != CopiedByShim {
 		t.Fatalf("a Pod the shim admitted was patched again: %v", annotations)

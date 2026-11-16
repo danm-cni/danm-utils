@@ -15,7 +15,6 @@ const (
 	NewInterfacesKey = NewGroup + "/interfaces"
 	CopiedMarkerKey  = "dma.danm.io/interfaces-copied"
 	CopiedByShim     = "shim"
-	SourcePodsKey    = "dma.danm.io/source-pods"
 	dynamicIp        = "dynamic"
 	tenantNetworkKey = "tenantNetwork"
 	clusterNetKey    = "clusterNetwork"
@@ -23,17 +22,12 @@ const (
 	ip6Key           = "ip6"
 )
 
-type SourcePod struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-}
-
 type objectField struct {
 	key   string
 	value json.RawMessage
 }
 
-func NewInterfaces(old, namespace, name string, rips []*danmtypes.ReservedIP) (string, []string) {
+func NewInterfaces(old, namespace string, rips []*danmtypes.ReservedIP) (string, []string) {
 	entries := []json.RawMessage{}
 	if err := json.Unmarshal([]byte(old), &entries); err != nil {
 		return old, nil
@@ -61,7 +55,7 @@ func NewInterfaces(old, namespace, name string, rips []*danmtypes.ReservedIP) (s
 			if err := json.Unmarshal(fields[index].value, &value); err != nil {
 				continue
 			}
-			replacement, note := ripReference(value, fields[index].key == ip6Key, namespace, name, candidates)
+			replacement, note := ripReference(value, fields[index].key == ip6Key, namespace, candidates)
 			if note != "" {
 				notes = append(notes, note)
 			}
@@ -162,25 +156,19 @@ func ripCandidates(fields []objectField, namespace string, rips []*danmtypes.Res
 	return candidates
 }
 
-func ripReference(value string, ipv6 bool, namespace, name string, candidates []*danmtypes.ReservedIP) (string, string) {
-	requested := ""
-	if value != dynamicIp {
-		address, _, _ := strings.Cut(value, "/")
-		parsed := net.ParseIP(address)
-		if parsed == nil || (parsed.To4() == nil) != ipv6 {
-			return "", ""
-		}
-		requested = parsed.String()
-	} else if name == "" {
+func ripReference(value string, ipv6 bool, namespace string, candidates []*danmtypes.ReservedIP) (string, string) {
+	if value == dynamicIp {
 		return "", ""
 	}
+	address, _, _ := strings.Cut(value, "/")
+	parsed := net.ParseIP(address)
+	if parsed == nil || (parsed.To4() == nil) != ipv6 {
+		return "", ""
+	}
+	requested := parsed.String()
 	matches := []string{}
 	for _, rip := range candidates {
-		address := ripAddress(rip, ipv6)
-		if address == "" {
-			continue
-		}
-		if (requested != "" && address == requested) || (requested == "" && isSourcePod(rip, namespace, name)) {
+		if ripAddress(rip, ipv6) == requested {
 			matches = append(matches, rip.Name)
 		}
 	}
@@ -190,7 +178,7 @@ func ripReference(value string, ipv6 bool, namespace, name string, candidates []
 	case 1:
 		return matches[0], ""
 	}
-	return "", fmt.Sprintf("%q of Pod %s/%s matches ReservedIPs %s, left unchanged", value, namespace, name, strings.Join(matches, ", "))
+	return "", fmt.Sprintf("%q of namespace %s matches ReservedIPs %s, left unchanged", value, namespace, strings.Join(matches, ", "))
 }
 
 func ripAddress(rip *danmtypes.ReservedIP, ipv6 bool) string {
@@ -201,21 +189,4 @@ func ripAddress(rip *danmtypes.ReservedIP, ipv6 bool) string {
 		}
 	}
 	return ""
-}
-
-func isSourcePod(rip *danmtypes.ReservedIP, namespace, name string) bool {
-	raw := rip.Annotations[SourcePodsKey]
-	if raw == "" {
-		return false
-	}
-	pods := []SourcePod{}
-	if err := json.Unmarshal([]byte(raw), &pods); err != nil {
-		return false
-	}
-	for _, pod := range pods {
-		if pod.Namespace == namespace && pod.Name == name {
-			return true
-		}
-	}
-	return false
 }

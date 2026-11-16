@@ -54,7 +54,7 @@ func New() engine.Plan {
 		copyNetworkObjects{},
 		copyDanmEps{},
 		dualAnnotateServices{},
-		pending(9, "replicate-reserved-ips", engine.PhaseConvert, "Create the ReservedIPs tagged on old-group DanmEps."),
+		replicateReservedIps{},
 		pending(10, "deploy-new-webhook", engine.PhaseCutover, "Roll the DANM webhook to 4.4 and point its configuration at the danm.io group."),
 		pending(11, "roll-control-plane", engine.PhaseCutover, "Roll netwatcher, svcwatcher and cleaner to 4.4."),
 		pending(12, "install-cni-binaries", engine.PhaseCutover, "Install the DANM 4.4 CNI binaries on every node."),

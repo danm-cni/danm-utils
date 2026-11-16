@@ -202,7 +202,7 @@ func ShimPatch(pod *corev1.Pod, namespace string, source ripSource) ([]jsonPatch
 		rips = nil
 		notes = append(notes, fmt.Sprintf("the ReservedIP cache is not synced, Pod %s/%s gets a verbatim copy", namespace, pod.Name))
 	}
-	value, rewriteNotes := NewInterfaces(old, namespace, pod.Name, rips)
+	value, rewriteNotes := NewInterfaces(old, namespace, rips)
 	notes = append(notes, rewriteNotes...)
 	return []jsonPatchOperation{
 		{Op: "add", Path: "/metadata/annotations/" + escapeJsonPointer(NewInterfacesKey), Value: value},

@@ -72,7 +72,7 @@ func (annotateExistingPods) Execute(ctx context.Context, handle *cluster.Handle)
 			mirrors = append(mirrors, objectName(pod.Namespace, pod.Name))
 			return nil
 		}
-		value, notes := NewInterfaces(pod.Annotations[OldInterfacesKey], pod.Namespace, pod.Name, rips)
+		value, notes := NewInterfaces(pod.Annotations[OldInterfacesKey], pod.Namespace, rips)
 		for _, note := range notes {
 			handle.Warnf("%s", note)
 		}
