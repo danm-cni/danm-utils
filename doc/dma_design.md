@@ -1386,7 +1386,10 @@ Per node the copier:
 
 `dma` waits for `numberReady == desiredNumberScheduled`, then deletes the DaemonSet.
 
-Pod spec: no `hostNetwork`, no `privileged`, `readOnlyRootFilesystem`, one hostPath mount.
+Pod spec: no `hostNetwork`, no `privileged`, `readOnlyRootFilesystem`, every capability dropped, one
+hostPath mount. The container runs as uid 0, which is what owns `/opt/cni/bin`; nothing is written
+outside the two mounts, the payload is read from the image's read-only root, and no capability is
+needed to write a root owned directory as root.
 
 **Canary.** The copy itself does not disturb running Pods, since the binary is only invoked on CNI
 ADD and DEL, but a bad binary would break new Pod creation fleet-wide. So the step first copies to a
@@ -1396,6 +1399,32 @@ copier DaemonSet roll across the remaining nodes. `--no-canary` skips this.
 
 Rollback runs the same copier in restore mode, renaming each `.dma-bak-<planID>` back over the live
 name. Keeping the backup node-local avoids ever having to store binaries in cluster state.
+
+Implementation notes:
+
+- The copier is the `dma` image running `dma cni install` or `dma cni restore`, hidden subcommands
+  like `dma shim serve`. The node side is a plain file copy: it backs up only when no backup of this
+  plan exists yet, so a second run never replaces the 4.3 backup with the 4.4 binary; it writes
+  through `_<name>` and renames; and it writes the marker the readiness probe reads from an
+  `emptyDir`, not onto the host.
+- The copier objects are deleted before a run starts and after it finishes, so a leftover from an
+  interrupted run never serves as the result of the next one. A copier which does not become ready
+  is left in place with a warning, for the operator to inspect.
+- The canary is the same copier as a `Job` pinned with `nodeName`, followed by a Pod on that node
+  annotated with `danm.io/interfaces` for one new-group network with an IPv4 allocation. The step
+  waits for the Pod to run, then asserts that a new-group `DanmEp` of that Pod and network carries an
+  address; the Pod is deleted either way. A cluster whose new group holds no such network fails the
+  step, naming `--no-canary` as the way past it.
+- The canary node is the first ready, schedulable node of the cluster, and the canary Pod runs in the
+  namespace of the network it attaches to. It carries no priority class, since the Priority admission
+  plugin allows a `system-` class only in `kube-system`, and that namespace is not where a tenant
+  network lives. The copier and its canary Job do run in `kube-system`, and keep
+  `system-node-critical`.
+- `Detect` reads the state record rather than the nodes, since node files are not visible through the
+  API: `Done` once the step recorded the installation and no copier object is left, `Partial` while a
+  copier or canary object exists, `NotStarted` otherwise.
+- `--binary-image` names the image the copier runs, for the case where the binaries are not in the
+  `dma` image; otherwise the copier runs the assistant's own image, resolved as the shim's is.
 
 ### Step 13: `resync-and-verify`
 
@@ -1478,13 +1507,27 @@ The Pod itself needs no host mounts; the copier DaemonSet it creates carries the
 mount. It exposes its own name and namespace through the downward API as `DMA_POD_NAME` and
 `DMA_POD_NAMESPACE`, from which `dma` finds its own image for the annotation shim.
 
-The operator runs subcommands with `kubectl exec`.
+The operator runs subcommands with `kubectl exec`. The Pod is scheduled onto a control plane node
+with the tolerations and the `system-cluster-critical` class of the DANM components, keeps a
+read-only root filesystem with every capability dropped, and stays alive in a sleep loop, since the
+assistant is driven command by command rather than running a loop of its own. The image reference in
+the manifest is a placeholder for the one `build_dma.sh` produced.
 
 ## 9. Build
 
 A `dma` target is added to `scm/build/Dockerfile`, building `cmd/dma` from this repository and
 `cmd/danm` plus `cmd/fakeipam` from the pinned `github.com/danm-cni/danm` module into
 `/payload/4.4/`. `build_dma.sh` at the repository root follows the pattern of `build_policer.sh`.
+
+The target has its own builder stage running `scm/build/build_payload.sh`, which builds the
+assistant and then the payload. The payload is built in a throwaway module which `go get`s the
+version `go list -m` reports for `github.com/danm-cni/danm`, because the command packages of DANM are
+not dependencies of this repository: they are neither vendored by `scm/build/build.sh` nor recorded
+in its `go.sum`, so building them from this module would mean editing both. The release directory is
+`PAYLOAD_RELEASE`, defaulting to `4.4`, which is what a future plan overrides to add its own payload.
+
+The image keeps its default root user. The annotation shim's Deployment pins the unprivileged 65532
+itself, and the CNI copier of step 12 needs uid 0 to write `/opt/cni/bin`.
 
 ## 10. Open items for future plans
 
@@ -1570,6 +1613,10 @@ documents onto the live workloads, and step 11 creates the whole document when i
 optional component, at the configured name and namespace and with the resolved image. The `cleaner`
 manifest of this repository carries the same fixes, being the source the embedded copy is taken
 from.
+
+The copier DaemonSet, canary Job and canary Pod of step 12 have no upstream source either; they are
+embedded under `pkg/dma/plans/v43to44/manifests/cni/`, and the upstream `danm-cni` DaemonSet is
+deliberately not used, for the reasons in step 12.
 
 The annotation shim's objects have no upstream source, `dma` defines them. They are embedded under
 `pkg/dma/plans/v43to44/manifests/shim/` as the templates step 4 renders, described there.

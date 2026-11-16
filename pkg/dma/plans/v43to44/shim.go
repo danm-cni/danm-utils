@@ -177,9 +177,17 @@ func shimImage(ctx context.Context, handle *cluster.Handle) (cluster.ComponentIm
 	if handle.Options.ShimImage != "" {
 		return cluster.ComponentImage{Image: handle.Options.ShimImage, PullPolicy: policy}, nil
 	}
+	return ownImage(ctx, handle)
+}
+
+func ownImage(ctx context.Context, handle *cluster.Handle) (cluster.ComponentImage, error) {
+	policy := handle.Images.PullPolicy
+	if policy == "" {
+		policy = corev1.PullIfNotPresent
+	}
 	name, namespace := os.Getenv(PodNameEnv), os.Getenv(PodNamespaceEnv)
 	if name == "" || namespace == "" {
-		return cluster.ComponentImage{}, fmt.Errorf("the image of the assistant is unknown, as %s and %s are not set; name it with --shim-image", PodNameEnv, PodNamespaceEnv)
+		return cluster.ComponentImage{}, fmt.Errorf("the image of the assistant is unknown, as %s and %s are not set; name it with --shim-image or --binary-image", PodNameEnv, PodNamespaceEnv)
 	}
 	pod, err := handle.Kube.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

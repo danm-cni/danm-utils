@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dma-cni-canary
+  namespace: {{ .Namespace }}
+  labels:
+    dma.danm.io: cni-canary
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        dma.danm.io: cni-canary
+    spec:
+      restartPolicy: Never
+      nodeName: {{ .NodeName }}
+      priorityClassName: system-node-critical
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      terminationGracePeriodSeconds: 0
+      automountServiceAccountToken: false
+      containers:
+      - name: dma
+        image: {{ .Image }}
+        imagePullPolicy: {{ .PullPolicy }}
+        command: ["/usr/local/bin/dma", "cni", "{{ .Mode }}", "--payload", "{{ .Payload }}", "--target", "/host/cni", "--suffix", "{{ .Suffix }}"]
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: cni-bin
+          mountPath: /host/cni
+        - name: marker
+          mountPath: /tmp
+      volumes:
+      - name: cni-bin
+        hostPath:
+          path: {{ .HostPath }}
+          type: Directory
+      - name: marker
+        emptyDir: {}

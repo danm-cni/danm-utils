@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dma-cni
+  namespace: {{ .Namespace }}
+  labels:
+    dma.danm.io: cni
+spec:
+  selector:
+    matchLabels:
+      dma.danm.io: cni
+  template:
+    metadata:
+      labels:
+        dma.danm.io: cni
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      terminationGracePeriodSeconds: 0
+      automountServiceAccountToken: false
+      containers:
+      - name: dma
+        image: {{ .Image }}
+        imagePullPolicy: {{ .PullPolicy }}
+        command: ["/usr/local/bin/dma", "cni", "{{ .Mode }}", "--payload", "{{ .Payload }}", "--target", "/host/cni", "--suffix", "{{ .Suffix }}", "--wait"]
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        readinessProbe:
+          exec:
+            command: ["/bin/cat", "/tmp/dma-cni-done"]
+          initialDelaySeconds: 1
+          periodSeconds: 2
+        volumeMounts:
+        - name: cni-bin
+          mountPath: /host/cni
+        - name: marker
+          mountPath: /tmp
+      volumes:
+      - name: cni-bin
+        hostPath:
+          path: {{ .HostPath }}
+          type: Directory
+      - name: marker
+        emptyDir: {}

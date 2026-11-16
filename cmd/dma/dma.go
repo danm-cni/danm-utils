@@ -88,7 +88,7 @@ func newRootCommand() *cobra.Command {
 		newStatusCommand(flags),
 		newExecuteCommand(flags),
 		newRollbackCommand(flags),
-		newShimCommand(flags),
+		newShimCommand(flags), newCniCommand(flags),
 		newVersionCommand(),
 	)
 	return root
@@ -221,6 +221,50 @@ func newRollbackCommand(flags *globalFlags) *cobra.Command {
 	command.Flags().StringVar(&confirm, "confirm", "", "confirmation token, for running without a terminal")
 	command.MarkFlagRequired("step")
 	return command
+}
+
+func newCniCommand(flags *globalFlags) *cobra.Command {
+	cni := &cobra.Command{
+		Use:    "cni",
+		Short:  "node side helpers of the CNI binary installer",
+		Hidden: true,
+	}
+	cni.AddCommand(newCniCopyCommand("install"), newCniCopyCommand("restore"), newCniWaitCommand())
+	return cni
+}
+
+func newCniCopyCommand(mode string) *cobra.Command {
+	config := v43to44.CniCopyConfig{Restore: mode == "restore"}
+	command := &cobra.Command{
+		Use:   mode,
+		Short: mode + " the DANM CNI binaries of the node",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return v43to44.CopyCniBinaries(ctx, config, command.OutOrStdout())
+		},
+	}
+	command.Flags().StringVar(&config.Payload, "payload", "", "directory holding the CNI binaries to install")
+	command.Flags().StringVar(&config.Target, "target", v43to44.CniTargetDir, "directory the CNI binaries of the node are mounted at")
+	command.Flags().StringVar(&config.Suffix, "suffix", "", "suffix of the backed up binaries")
+	command.Flags().StringVar(&config.Marker, "marker", v43to44.CniMarkerFile, "file written once the binaries are in place")
+	command.Flags().BoolVar(&config.Wait, "wait", false, "stay alive after the binaries are in place")
+	return command
+}
+
+func newCniWaitCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "wait",
+		Short: "stay alive until the Pod is deleted",
+		Args:  cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			<-ctx.Done()
+			return nil
+		},
+	}
 }
 
 func newShimCommand(flags *globalFlags) *cobra.Command {
