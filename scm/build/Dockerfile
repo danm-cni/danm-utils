@@ -1,7 +1,7 @@
 # Set defaults
 ARG USERNAME=danm
 ARG UID=147
-ARG BUILDER=golang:1.26-alpine3.24
+ARG BUILDER=golang:1.27-alpine3.24
 ARG CALICOCTL_VERSION=v3.32.2
 
 FROM ${BUILDER} AS builder
@@ -32,6 +32,27 @@ COPY --from=builder /go/bin/cleaner /go/bin/calicoctl /usr/local/bin/
 USER cleaner
 WORKDIR /
 ENTRYPOINT ["/usr/local/bin/cleaner"]
+
+FROM ${BUILDER} AS dma-builder
+MAINTAINER Levente Kale <levente.kale@gmail.com>
+
+RUN apk add --no-cache ca-certificates make git bash
+
+RUN mkdir -p ${GOPATH}/src/github.com/danm-cni/danm-utils
+COPY / ${GOPATH}/src/github.com/danm-cni/danm-utils/
+
+WORKDIR ${GOPATH}/src/github.com/danm-cni/danm-utils
+
+RUN scm/build/build_payload.sh
+
+FROM alpine:latest AS dma
+MAINTAINER Levente Kale <levente.kale@gmail.com>
+
+COPY --from=dma-builder /go/bin/dma /usr/local/bin/dma
+COPY --from=dma-builder /payload /payload
+RUN chmod 0755 /usr/local/bin/dma /payload/*/*
+WORKDIR /
+ENTRYPOINT ["/usr/local/bin/dma"]
 
 FROM alpine:latest AS policer
 MAINTAINER Levente Kale <levente.kale@gmail.com>

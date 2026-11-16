@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dma-cni-canary
+  namespace: {{ .Namespace }}
+  labels:
+    dma.danm.io: cni-canary
+spec:
+  restartPolicy: Never
+  nodeName: {{ .NodeName }}
+  tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+  terminationGracePeriodSeconds: 0
+  automountServiceAccountToken: false
+  containers:
+  - name: dma
+    image: {{ .Image }}
+    imagePullPolicy: {{ .PullPolicy }}
+    command: ["/usr/local/bin/dma", "cni", "wait"]
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
