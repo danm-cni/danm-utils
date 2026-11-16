@@ -1237,6 +1237,42 @@ were neither validated nor mutated; in particular no VNI was allocated twice.
 The full prior specs are snapshotted into state. The step waits for Ready with a timeout and
 auto-reverts to the snapshot on timeout, which is the real defence against a mistyped image URL.
 
+The webhook's certificates are not touched. The `caBundle` and the Service the hooks point at are
+carried over from the 4.3 configuration, so the rolled webhook serves with the material it already
+has, and a configuration which names no Service with a CA bundle fails the step before anything is
+written.
+
+Implementation notes:
+
+- The workload is the one step 1 recorded for the `webhook` component (section 5.8); the step fails
+  when there is none, since a reference from the configuration could point somewhere else.
+- The configuration is discovered, not addressed by name: the step takes the one
+  `MutatingWebhookConfiguration` of the cluster whose hooks carry a rule on the `danm.k8s.io` or the
+  `danm.io` group, so a renamed installation is migrated and the step still finds its own work after
+  it has run. None fails the step; several fall back to the upstream name `danm-webhook-config`, and
+  fail naming the candidates when none of them carries it. The name is recorded with the snapshot, so
+  rollback restores the object the step changed. The four hooks are rendered from the 4.4 manifest
+  embedded under
+  `pkg/dma/plans/v43to44/manifests/webhook/` (A.3), whose only template actions are the Service, its
+  namespace and the CA bundle. Only `webhooks` is replaced; the object itself is updated in place,
+  as `admissionregistration.k8s.io` serves one object under both versions.
+- The container rolled is found by the component name, here `webhook`: a container named exactly
+  that, else the single container whose name contains it, such as the upstream `danm-webhook`, else
+  the only container of a single container template. Several candidates, or none, fail the step
+  naming what the template runs. Anything beside the match, such as a sidecar, is left alone. Step 11
+  resolves its containers the same way.
+- The order is: snapshot, roll the workload, wait for it to become ready, and only then point the
+  configuration at `danm.io`. A roll which does not become ready within `--rollout-timeout` is
+  reverted to the snapshot and the configuration is never touched, so the 4.3 webhook keeps serving
+  its own group.
+- The snapshots are written once and kept, so a retry after a half-finished run still restores the
+  4.3 spec rather than the rolled one.
+- `Detect`: `Done` when the recorded workload runs the resolved 4.4 image, is ready, and the
+  configuration holds exactly the rendered hooks; `NotStarted` when neither is true; `Partial`
+  otherwise.
+- Rollback restores the recorded hooks first, then the recorded spec, and waits for the workload to
+  become ready again.
+
 ### Step 11: `roll-control-plane`
 
 Patches the `netwatcher` workload recorded by step 1, and the `svcwatcher` and `cleaner` workloads
@@ -1440,6 +1476,7 @@ of the plan fails if an embedded CRD declares `selectableFields` again.
 | New CRDs, production | DANM `integration/crds/production/{DanmEp,TenantNetwork,ClusterNetwork,TenantConfig,ReservedIP}.yaml` |
 | CNI ClusterRole | DANM `integration/cni_config/danm_rbac.yaml` |
 | Webhook Deployment and configuration | DANM `integration/manifests/webhook/webhook.yaml` |
+| Webhook configuration, embedded | `pkg/dma/plans/v43to44/manifests/webhook/webhookconfiguration.yaml` |
 | netwatcher RBAC and template | DANM `integration/manifests/netwatcher/{0netwatcher_rbac,netwatcher_ds}.yaml` |
 | svcwatcher RBAC and template | DANM `integration/manifests/svcwatcher/{0svcwatcher_rbac,svcwatcher_ds}.yaml` |
 | cleaner RBAC | danm-utils `integration/manifests/cleaner/cleaner.yaml` |
