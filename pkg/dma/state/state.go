@@ -111,6 +111,10 @@ type WorkloadRecord struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	Present   bool   `json:"present"`
+	// Configured is true when the reference came from the configuration rather than from the
+	// plan default. An absent optional component whose reference was configured is one the
+	// operator asked for, and step 11 deploys it.
+	Configured bool `json:"configured,omitempty"`
 }
 
 // Store reads and writes plan records in a single ConfigMap, one key per plan.

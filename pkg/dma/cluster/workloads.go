@@ -130,8 +130,15 @@ func LoadWorkloadConfig(ctx context.Context, client kubernetes.Interface, namesp
 	return config, nil
 }
 
-func RecordWorkload(ref WorkloadRef, present bool) state.WorkloadRecord {
-	return state.WorkloadRecord{Kind: string(ref.Kind), Namespace: ref.Namespace, Name: ref.Name, Present: present}
+func RecordWorkload(ref WorkloadRef, present, configured bool) state.WorkloadRecord {
+	return state.WorkloadRecord{Kind: string(ref.Kind), Namespace: ref.Namespace, Name: ref.Name, Present: present, Configured: configured}
+}
+
+// Configured reports whether the operator named this component's workload, rather than leaving
+// it at the plan default.
+func (config WorkloadConfig) Configured(component string) bool {
+	_, found := config.Overrides[component]
+	return found
 }
 
 func RecordedWorkload(record state.WorkloadRecord) WorkloadRef {

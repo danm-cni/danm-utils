@@ -164,7 +164,15 @@ func rbacSubjects(ctx context.Context, handle *cluster.Handle) (map[string]rbacv
 			continue
 		}
 		workload, found := record.Workloads[component]
-		if !found || !workload.Present {
+		if !found || (!workload.Present && !workload.Configured) {
+			continue
+		}
+		if !workload.Present {
+			account, err := componentAccountName(component)
+			if err != nil {
+				return nil, err
+			}
+			subjects[component] = rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: workload.Namespace, Name: account}
 			continue
 		}
 		serviceAccount, err := workloadServiceAccount(ctx, handle, cluster.RecordedWorkload(workload))

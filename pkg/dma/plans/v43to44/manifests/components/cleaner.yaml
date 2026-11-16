@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: danm-cleaner
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: danm-cleaner
+  namespace: kube-system
+  labels:
+    danm: cleaner
+spec:
+  selector:
+    matchLabels:
+      danm: cleaner
+  template:
+    metadata:
+      labels:
+        danm: cleaner
+    spec:
+      serviceAccountName: danm-cleaner
+      priorityClassName: system-cluster-critical
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      terminationGracePeriodSeconds: 15
+      dnsPolicy: ClusterFirst
+      containers:
+      - name: danm-cleaner
+        image: cleaner
+        imagePullPolicy: IfNotPresent
