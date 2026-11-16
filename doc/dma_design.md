@@ -165,7 +165,8 @@ built, not to the migration.
   `--logtostderr` argument of the 4.3 DaemonSet makes it exit with
   `flag provided but not defined: -logtostderr`.
 - **netwatcher** templates gain `priorityClassName: system-node-critical` and
-  `terminationGracePeriodSeconds: 15`. Discovery now polls `ServerResourcesForGroupVersion` for up
+  `terminationGracePeriodSeconds: 15`. `dma` writes both onto an existing `netwatcher` as well, with
+  the broad `NoSchedule` and `NoExecute` tolerations a node agent needs. Discovery now polls `ServerResourcesForGroupVersion` for up
   to one minute at start-up, and refuses to start when only one of `TenantNetwork` and
   `ClusterNetwork` is served. 4.4 netwatcher records the parent device of NADs it patched in the
   `danm.io/parent-device` and `danm.io/patched-master` annotations. NADs patched by 4.3 carry
@@ -509,7 +510,11 @@ workload_webhook: Deployment/danm/danm-webhook
 
 Whether a component is required stays fixed by the plan and cannot be configured. A required
 component whose resolved workload does not exist fails preflight; an optional one is reported and
-skipped by every later step. There is no way to declare a required component absent.
+skipped by every later step, unless its reference was configured rather than defaulted, which step 11
+reads as a request to deploy it. There is no way to declare a required component absent.
+
+Step 1 records for every component whether its reference came from the configuration or from the plan
+default, since that is what tells a later step an absent optional component was asked for.
 
 The plan defaults for the 4.3-to-4.4 plan are the names of the DANM and danm-utils manifests:
 
@@ -1237,6 +1242,10 @@ were neither validated nor mutated; in particular no VNI was allocated twice.
 The full prior specs are snapshotted into state. The step waits for Ready with a timeout and
 auto-reverts to the snapshot on timeout, which is the real defence against a mistyped image URL.
 
+The scheduling fields of the embedded `webhook` manifest, described with step 11, are written onto
+the workload in the same patch as the image, so the webhook ends up on a control plane node with the
+`system-cluster-critical` class, like the other components of the control plane.
+
 The webhook's certificates are not touched. The `caBundle` and the Service the hooks point at are
 carried over from the 4.3 configuration, so the rolled webhook serves with the material it already
 has, and a configuration which names no Service with a CA bundle fails the step before anything is
@@ -1276,13 +1285,44 @@ Implementation notes:
 ### Step 11: `roll-control-plane`
 
 Patches the `netwatcher` workload recorded by step 1, and the `svcwatcher` and `cleaner` workloads
-if step 1 found them, to their resolved 4.4 images. Components that are not present are skipped and
-reported, not created:
-`svcwatcher` and `cleaner` are optional in both modes.
+if step 1 found them, to their resolved 4.4 images. `svcwatcher` and `cleaner` are optional in both
+modes. An optional component which is not deployed is skipped and reported, unless the operator
+asked for it, see below.
+
+**Deploying an optional component.** Naming the workload of an absent optional component explicitly,
+with `--workload <component>=<Kind>/<namespace>/<name>` or the `workload_<component>` key of
+`dma-config` (section 5.8), is the opt-in to deploy it: there is no reason to name an object which
+does not exist other than to ask for it. A component left at its plan default stays skipped, so the
+behaviour of an installation which simply does not run `svcwatcher` is unchanged.
+
+- Step 1 records, next to each resolved reference, whether it was configured rather than defaulted.
+  Later steps read that from state like everything else, so editing `dma-config` mid-plan cannot turn
+  a deployment on or off.
+- Step 3 treats a configured absent component as deployed: it creates its `danm:<component>-4.4`
+  ClusterRole and binds it to the ServiceAccount the component's manifest names, in the namespace of
+  the configured reference. The role therefore exists before the Pod does.
+- Step 11 creates that ServiceAccount and the workload itself, from the manifest embedded for the
+  component (A.3), at the configured namespace and name, with the resolved 4.4 image and the same
+  template changes it applies to a workload it rolls.
+- The kind of the configured reference must be the kind of the embedded manifest, `DaemonSet` for
+  both components. Any other kind fails the step instead of reshaping the workload into something
+  the component was never tested as.
+- The step reports, before it creates or rolls a component whose template carries a node selector,
+  when no node of the cluster matches it, so the operator sees why a readiness wait is about to
+  fail.
+- Rollback deletes the workload and the ServiceAccount it created, and nothing else; the ClusterRole
+  and binding belong to step 3 and are removed by its own rollback. A component which already
+  existed is restored from its snapshot, as before.
+- `Detect` counts a configured absent component as pending until its workload exists, runs the 4.4
+  image and is ready.
 
 Changing the image alone is not enough; each template is brought to its 4.4 form:
 
-- `netwatcher`: `priorityClassName: system-node-critical` and `terminationGracePeriodSeconds: 15`.
+- the scheduling fields of the component's embedded manifest (A.3) are written onto the live
+  template: `priorityClassName`, `nodeSelector`, `tolerations` and `terminationGracePeriodSeconds`.
+  A field the manifest does not set is left as it is, so nothing is cleared. This is what gives
+  `netwatcher` its `system-node-critical` class and its grace period of 15 seconds, and it applies to
+  components which already exist as much as to ones `dma` deploys.
 - `svcwatcher`: the `--logtostderr` argument is removed, since the 4.4 binary exits on it
   (section 2.9).
 - every rolled component whose template carries `danm.k8s.io/interfaces` gets `danm.io/interfaces`
@@ -1303,6 +1343,28 @@ last state meanwhile, so traffic is not affected, only updates in that window ar
 restores the snapshot the same way.
 
 Same snapshot, readiness-wait and auto-revert behaviour as step 10.
+
+Implementation notes:
+
+- The components are rolled in the order `netwatcher`, `svcwatcher`, `cleaner`, each with its own
+  snapshot, readiness wait and revert, so a failure leaves the components already rolled in place and
+  the failing one on its 4.3 spec. A missing `netwatcher` record fails the step; a `svcwatcher` or
+  `cleaner` that step 1 did not find is reported and skipped.
+- The container of each component is resolved by the chain of step 10, so `danm-cleaner` is found
+  for the `cleaner` component without naming it anywhere.
+- The template changes are applied in the same write as the image, so a workload running the 4.4
+  image is a workload whose template is already in its 4.4 form. `Detect` checks both anyway, plus
+  readiness, and reads `Done` only when every deployed component is current. It compares the template
+  against the result of applying the manifest's fields to it, so the comparison can never drift from
+  what execution writes.
+- A component the step deploys which does not become ready within `--rollout-timeout` is deleted
+  again, workload and ServiceAccount, so a failed deployment leaves nothing behind.
+- `--logtostderr` is removed in whichever form it appears, with one or two dashes and with or
+  without a value, from both `command` and `args`. The arguments are left untouched when it is
+  absent, so the step does not rewrite `null` into `[]`.
+- `svcwatcher` is written twice: once with the all-at-once strategy and the new image, and once more
+  after it is ready, with the strategy taken from the snapshot. A strategy change alone starts no
+  rollout, so the second write costs nothing.
 
 ### Step 12: `install-cni-binaries`
 
@@ -1479,7 +1541,7 @@ of the plan fails if an embedded CRD declares `selectableFields` again.
 | Webhook configuration, embedded | `pkg/dma/plans/v43to44/manifests/webhook/webhookconfiguration.yaml` |
 | netwatcher RBAC and template | DANM `integration/manifests/netwatcher/{0netwatcher_rbac,netwatcher_ds}.yaml` |
 | svcwatcher RBAC and template | DANM `integration/manifests/svcwatcher/{0svcwatcher_rbac,svcwatcher_ds}.yaml` |
-| cleaner RBAC | danm-utils `integration/manifests/cleaner/cleaner.yaml` |
+| cleaner RBAC and template | danm-utils `integration/manifests/cleaner/cleaner.yaml` |
 
 The CRDs are embedded verbatim under `pkg/dma/plans/v43to44/manifests/crds/<mode>/`. Step 1 reads
 their schemas for its pruning check, step 2 applies them.
@@ -1493,8 +1555,21 @@ own.
 
 The `.yaml.tmpl` variants use `confd`-style `getenv` interpolation for the image reference. `dma`
 resolves images itself (section 5.6) and so embeds the plain `.yaml` forms, patching the image
-field programmatically rather than templating. The DaemonSet templates are used only as the
-reference for the fields step 11 changes; step 11 patches the live DaemonSets and never replaces them.
+field programmatically rather than templating. Steps 10 and 11 patch the live workloads and never
+replace them, so the upstream templates are the reference for the fields they change.
+
+Those fields live in one embedded document per component, under
+`pkg/dma/plans/v43to44/manifests/components/<component>.yaml`, each carrying the component's
+ServiceAccount and its DaemonSet or Deployment. They are the uniform 4.4 form rather than a verbatim
+copy: every component carries the `NoSchedule` and `NoExecute` tolerations, a
+`terminationGracePeriodSeconds` and a priority class, `system-node-critical` for the `netwatcher`
+node agent and `system-cluster-critical` for the rest, and the three control plane components select
+`node-role.kubernetes.io/control-plane` rather than the `node-role.kubernetes.io/master` label
+kubeadm stopped setting in Kubernetes 1.24. Steps 10 and 11 write the scheduling fields of these
+documents onto the live workloads, and step 11 creates the whole document when it deploys an absent
+optional component, at the configured name and namespace and with the resolved image. The `cleaner`
+manifest of this repository carries the same fixes, being the source the embedded copy is taken
+from.
 
 The annotation shim's objects have no upstream source, `dma` defines them. They are embedded under
 `pkg/dma/plans/v43to44/manifests/shim/` as the templates step 4 renders, described there.

@@ -279,8 +279,11 @@ func (check *preflight) verifyWorkloads(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		check.workloads[workload.Component] = cluster.RecordWorkload(ref, found)
+		configured := check.handle.Workloads.Configured(workload.Component)
+		check.workloads[workload.Component] = cluster.RecordWorkload(ref, found, configured)
 		switch {
+		case !found && !workload.Required && configured:
+			check.handle.Printf("%s is not deployed as %s, which is configured, so step 11 deploys it.", workload.Component, ref)
 		case !found && !workload.Required:
 			check.handle.Printf("%s is not deployed as %s, later steps skip it.", workload.Component, ref)
 		case !found:

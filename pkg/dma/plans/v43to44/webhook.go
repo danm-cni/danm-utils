@@ -65,7 +65,11 @@ func (deployNewWebhook) Detect(ctx context.Context, handle *cluster.Handle) (eng
 		return engine.StateNotStarted, err
 	}
 	running, err := containerImage(object.template(), ComponentWebhook)
-	rolled := err == nil && running == image.Image
+	current, err := componentTemplateIsCurrent(ComponentWebhook, object.template())
+	if err != nil {
+		return engine.StateNotStarted, err
+	}
+	rolled := running == image.Image && current
 	configured, err := webhookConfigurationCurrent(ctx, handle)
 	if err != nil {
 		return engine.StateNotStarted, err
@@ -111,6 +115,12 @@ func (deployNewWebhook) Execute(ctx context.Context, handle *cluster.Handle) err
 	}
 	if err := setContainerImage(object.template(), ComponentWebhook, image); err != nil {
 		return fmt.Errorf("%s cannot be rolled: %w", ref, err)
+	}
+	if err := applyComponentTemplate(ComponentWebhook, object.template()); err != nil {
+		return err
+	}
+	if err := warnMissingControlPlaneNodes(ctx, handle, ComponentWebhook); err != nil {
+		return err
 	}
 	if err := object.update(ctx, handle); err != nil {
 		return err

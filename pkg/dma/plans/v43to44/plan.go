@@ -56,7 +56,7 @@ func New() engine.Plan {
 		dualAnnotateServices{},
 		replicateReservedIps{},
 		deployNewWebhook{},
-		pending(11, "roll-control-plane", engine.PhaseCutover, "Roll netwatcher, svcwatcher and cleaner to 4.4."),
+		rollControlPlane{},
 		pending(12, "install-cni-binaries", engine.PhaseCutover, "Install the DANM 4.4 CNI binaries on every node."),
 		pending(13, "resync-and-verify", engine.PhaseCutover, "Carry over the allocations made in the danm.k8s.io group since the copy, and verify the cluster."),
 		pending(14, "remove-old-api", engine.PhaseCleanup, "Remove the danm.k8s.io webhook configuration, CRDs and RBAC, and the backed up CNI binaries."),

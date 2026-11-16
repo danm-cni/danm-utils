@@ -86,7 +86,7 @@ func webhookHandle(t *testing.T, ready bool, objects ...k8sruntime.Object) *clus
 	}
 	if _, err := handle.State.Mutate(context.Background(), PlanID, func(record *state.PlanRecord) error {
 		record.Workloads = map[string]state.WorkloadRecord{
-			ComponentWebhook: cluster.RecordWorkload(cluster.WorkloadRef{Kind: cluster.WorkloadDeployment, Namespace: DanmNamespace, Name: "danm-webhook-deployment"}, true),
+			ComponentWebhook: cluster.RecordWorkload(cluster.WorkloadRef{Kind: cluster.WorkloadDeployment, Namespace: DanmNamespace, Name: "danm-webhook-deployment"}, true, false),
 		}
 		record.UpsertStep(state.StepRecord{ID: 10, Name: "deploy-new-webhook", Status: state.StatusRunning})
 		return nil

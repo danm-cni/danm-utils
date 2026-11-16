@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netwatcher
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: netwatcher
+  namespace: kube-system
+  labels:
+    danm.io: netwatcher
+spec:
+  selector:
+    matchLabels:
+      danm.io: netwatcher
+  template:
+    metadata:
+      labels:
+        danm.io: netwatcher
+    spec:
+      serviceAccountName: netwatcher
+      priorityClassName: system-node-critical
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      terminationGracePeriodSeconds: 15
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      hostIPC: true
+      hostPID: true
+      containers:
+      - name: netwatcher
+        image: netwatcher
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          capabilities:
+            add:
+            - SYS_PTRACE
+            - SYS_ADMIN
+            - NET_ADMIN
+            - NET_RAW
