@@ -933,6 +933,24 @@ value. A new key the user set by hand is never touched.
 Rollback removes `danm.io/interfaces` and the marker from every Pod whose marker is `patched`.
 Pods marked `shim` keep theirs, as do Pods with a hand-set new key.
 
+Implementation notes:
+
+- The Pods of every namespace are walked in pages, as a large cluster holds far more Pods than
+  objects of any DANM kind. Execute and rollback both patch while they walk, so an interrupted run
+  leaves the Pods it reached already patched.
+- The ReservedIPs the rewrite needs are listed once, before the walk, and only in production mode.
+  Until step 9 has run there are none, and the value is the plain copy.
+- The step fails before patching anything while the deployment mode is unknown, since the rewrite
+  depends on it; step 1 records the mode, and `--mode` names it when step 5 is forced ahead.
+- `Detect`: `Done` when no Pod carries the old key without the new one, counting neither mirror Pods
+  nor Pods being deleted; `NotStarted` when such Pods exist and no Pod carries the `patched` marker;
+  `Partial` otherwise.
+- A mirror Pod is one carrying `kubernetes.io/config.mirror`. They are listed in one warning naming
+  the key to add to their static manifests.
+- The patch is a merge patch of `metadata.annotations` alone, and the rollback is the same patch
+  with both keys set to null. A Pod deleted between the listing and its patch is counted and skipped,
+  not an error.
+
 ### Step 6: `copy-network-objects`
 
 Reads every old-group network object for the detected mode (`DanmNet`, or `TenantNetwork` plus

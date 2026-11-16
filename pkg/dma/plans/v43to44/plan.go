@@ -45,7 +45,7 @@ func New() engine.Plan {
 		installNewCrds{},
 		installNewRbac{},
 		installAnnotationShim{},
-		pending(5, "annotate-existing-pods", engine.PhaseConvert, "Add danm.io/interfaces to every existing Pod carrying only danm.k8s.io/interfaces."),
+		annotateExistingPods{},
 		pending(6, "copy-network-objects", engine.PhaseConvert, "Copy the network objects and TenantConfigs of the danm.k8s.io group into the danm.io group."),
 		pending(7, "copy-danmeps", engine.PhaseConvert, "Copy the DanmEps of the danm.k8s.io group into the danm.io group."),
 		pending(8, "dual-annotate-services", engine.PhaseConvert, "Add the danm.io Service annotations next to the danm.k8s.io ones."),
