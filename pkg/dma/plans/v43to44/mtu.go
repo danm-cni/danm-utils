@@ -13,9 +13,8 @@ import (
 
 const (
 	MtuTagKey = "dma.danm.io/mtu"
-	MinMtu    = 68
-	MinMtuV6  = 1280
-	MaxMtu    = 65535
+	MinMtu    = 1280
+	MaxMtu    = 9000
 )
 
 func isIpvlan(network *danmtypes.DanmNet) bool {
@@ -52,13 +51,9 @@ func ParseMtuTag(network *danmtypes.DanmNet) (int, bool, error) {
 	if err != nil {
 		return 0, true, fmt.Errorf("%s %s has a %s annotation of %q, which is not an integer", network.Kind, objectName(network.Namespace, network.Name), MtuTagKey, value)
 	}
-	minimum := MinMtu
-	if network.Spec.Options.Net6 != "" {
-		minimum = MinMtuV6
-	}
 	maximum := MaxMtu - encapOverhead(network)
-	if parsed < minimum || parsed > maximum {
-		return 0, true, fmt.Errorf("%s %s has a %s annotation of %d, outside of the %d to %d range the network can carry", network.Kind, objectName(network.Namespace, network.Name), MtuTagKey, parsed, minimum, maximum)
+	if parsed < MinMtu || parsed > maximum {
+		return 0, true, fmt.Errorf("%s %s has a %s annotation of %d, outside of the %d to %d range DANM %s accepts for this network", network.Kind, objectName(network.Namespace, network.Name), MtuTagKey, parsed, MinMtu, maximum, TargetRelease)
 	}
 	return parsed, true, nil
 }

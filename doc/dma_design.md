@@ -263,9 +263,12 @@ before and after.
 
 ### 4.4 Where it takes effect
 
-Step 6 reads the tag, validates it (integer, sane bounds, and coherent with
-`VxlanOverhead` / `VxlanOverheadV6` for VxLAN networks, see `pkg/mtu/mtu.go`), and sets
-`Spec.Options.Mtu` on the new-group object. An absent tag leaves `Mtu` unset, which resolves to
+Step 6 reads the tag, validates it and sets `Spec.Options.Mtu` on the new-group object. A valid tag
+is an integer from 1280 to 9000, the bounds the 4.4 CRD schema puts on `mtu`, less the
+`VxlanOverhead` or `VxlanOverheadV6` of a VxLAN network (`pkg/mtu/mtu.go`), since the device
+carrying it has to fit the payload and the outer headers within the same ceiling. The bounds are
+the schema's, so a tag `dma` accepts is one the API server accepts, and an out-of-range tag is
+rejected by preflight instead of by the API server in the middle of step 6. An absent tag leaves `Mtu` unset, which resolves to
 1500. An unparseable or out-of-range tag fails the step loudly rather than creating a quietly broken
 network. The `dma.danm.io/mtu` annotation itself is stripped from the copy, since the value now
 lives in the spec and a stale duplicate invites drift.
@@ -661,8 +664,9 @@ Implementation notes:
   `updatedNumberScheduled` and `numberReady` equal `desiredNumberScheduled` with none unavailable;
   for a Deployment, `updatedReplicas` and `availableReplicas` equal `spec.replicas` with none
   unavailable. The resolved references and their presence are recorded in state with the mode.
-- An MTU tag must be an integer between 68 (1280 for a network with IPv6) and 65535 minus the VxLAN
-  overhead of section 4.4. An invalid tag fails preflight on any network type, not only IPVLAN.
+- An MTU tag must be an integer between 1280 and 9000 minus the VxLAN overhead of section 4.4,
+  which are the bounds of the 4.4 schema. An invalid tag fails preflight on any network type, not
+  only IPVLAN.
 - A ReservedIP name must be both a valid label value, as the 4.4 webhook demands, and a valid object
   name.
 - The VLAN limit of 4094 is mirrored as a constant: DANM's `pkg/admit` depends on far more than `dma`
@@ -993,6 +997,35 @@ is not locked either.
 
 Rollback deletes the new-group copies. The old group is still live and authoritative, so the risk is
 nil.
+
+Implementation notes:
+
+- The transformation runs through the 4.4 typed objects: the pruned source is read into
+  `DanmNet` or `TenantConfig`, transformed, and written back out. That is what emits `Options` and
+  `allocation_pool` of a network which carried neither, with no field list to keep in step.
+- The copy's metadata is built from the name, the namespace, the labels, the annotations and the
+  owner references which do not point at the old group, so every server-side field is dropped by
+  construction rather than by enumeration.
+- `Detect` compares names, not contents: `Done` when every source object of the mode has a copy,
+  `NotStarted` when none has, `Partial` in between. Content is deliberately not compared, since the
+  IPAM state of a live cluster drifts within seconds of the copy, and a step reading as `Partial`
+  would block every step behind it. Drift is step 13's business.
+- Execute does compare contents: a copy which matches its source is skipped, and one which differs
+  is corrected by an update. The comparison covers labels, annotations, owner references and the
+  spec, with every bitmask compared by its set bits.
+- Two bitmasks hold the same set bits when their common prefix is equal and the tail of the longer
+  one is all zeroes, which is cheaper than walking the 100001 bits of a resized VxLAN mask.
+- The prune check runs per object, on the copy, before anything is written. Objects which would lose
+  fields without a recorded acceptance are collected and fail the step once every other object is
+  copied, so that a single bad object does not hide the rest or hold up the ones which are fine.
+- Rollback deletes every object of the plan's network kinds in the `danm.io` group, not only the ones
+  it can match to a source, so that a copy whose source was deleted in the meantime cannot keep the
+  rollback of step 2 from deleting the CRDs.
+- Listing tolerates a missing CRD on either side, so that `dma status` still reports after step 14
+  has removed the old group, and before step 2 has installed the new one.
+- The warning is raised through the step's `Warnings`, so the runner shows it above the confirmation
+  prompt and on a dry run, and the plan repeats it as an advisory for as long as step 6 reads as
+  `Done` and step 14 does not.
 
 ### Step 7: `copy-danmeps`
 

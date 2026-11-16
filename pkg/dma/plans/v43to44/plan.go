@@ -9,6 +9,11 @@ import (
 )
 
 const (
+	copyNetworksStep = 6
+	removeOldApiStep = 14
+)
+
+const (
 	PlanID        = "4.3-to-4.4"
 	DanmNamespace = "kube-system"
 	TargetRelease = "4.4"
@@ -46,7 +51,7 @@ func New() engine.Plan {
 		installNewRbac{},
 		installAnnotationShim{},
 		annotateExistingPods{},
-		pending(6, "copy-network-objects", engine.PhaseConvert, "Copy the network objects and TenantConfigs of the danm.k8s.io group into the danm.io group."),
+		copyNetworkObjects{},
 		pending(7, "copy-danmeps", engine.PhaseConvert, "Copy the DanmEps of the danm.k8s.io group into the danm.io group."),
 		pending(8, "dual-annotate-services", engine.PhaseConvert, "Add the danm.io Service annotations next to the danm.k8s.io ones."),
 		pending(9, "replicate-reserved-ips", engine.PhaseConvert, "Create the ReservedIPs tagged on old-group DanmEps."),
@@ -72,6 +77,22 @@ func (plan *plan) Meta() engine.PlanMeta {
 
 func (plan *plan) Steps() []engine.Step {
 	return plan.steps
+}
+
+func (plan *plan) Advisories(rows []engine.StepRow) []string {
+	copied, removed := false, false
+	for _, row := range rows {
+		switch row.Meta.ID {
+		case copyNetworksStep:
+			copied = row.Detected == engine.StateDone
+		case removeOldApiStep:
+			removed = row.Detected == engine.StateDone
+		}
+	}
+	if copied && !removed {
+		return []string{frozenGroupWarning}
+	}
+	return nil
 }
 
 type pendingStep struct {
