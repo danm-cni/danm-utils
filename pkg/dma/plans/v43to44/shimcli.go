@@ -33,7 +33,7 @@ func ShimStatus(ctx context.Context, handle *cluster.Handle) ([]ShimTemplate, er
 		return nil, err
 	}
 	for index := range templates {
-		templates[index].Value, _ = NewInterfaces(templates[index].Value, templates[index].Namespace, "", rips)
+		templates[index].Value, _ = NewInterfaces(templates[index].Value, templates[index].Namespace, rips)
 	}
 	return templates, nil
 }

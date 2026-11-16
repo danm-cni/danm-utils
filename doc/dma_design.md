@@ -643,7 +643,8 @@ operator clears it on the 4.3 side: TenantNetworks holding a VNI above 4094 are 
 the `vniRange` is trimmed. `dma` only reports; it does not fix.
 
 It validates the ReservedIP replication tags already present on `DanmEp`s with the checks of
-step 9, and in lightweight mode fails on any such tag.
+step 9, and in lightweight mode fails on any such tag. It warns, as step 9 does, about a tagged
+`DanmEp` whose Pod asks for the tagged address dynamically.
 
 Implementation notes:
 
@@ -897,8 +898,8 @@ Implementation notes:
   form on every run, whoever created them. The Secret is kept while its certificate verifies against
   its CA for the Service name with more than a year left; `Detect` does not look at expiry, so a
   certificate close to expiry is renewed by running the step again.
-- `dma shim status` evaluates the new value for a template without a Pod name, so only literal
-  addresses can map to a ReservedIP there. `dma shim remove` deletes the same objects as rollback.
+- `dma shim status` evaluates the new value of a template exactly as the shim would, since the
+  rewrite depends on the namespace alone. `dma shim remove` deletes the same objects as rollback.
 
 ### Step 5: `annotate-existing-pods`
 
@@ -1120,9 +1121,6 @@ created. Like the copies of steps 6 and 7, they are written while no webhook cov
 - labels each ReservedIP with `danm.io/network-name` and `danm.io/network-type`
 - adds it to `Status.ReservedIPs` of its new-group network, through the `/status` subresource
 - sets `Spec.Description` to name the source `DanmEp`s
-- records the namespace and name of every Pod whose `DanmEp` was tagged for it in the
-  `dma.danm.io/source-pods` annotation, a JSON list of `{"namespace": ..., "name": ...}` objects, used
-  by the ReservedIP rewrite below
 
 **Validation.** Every tag is validated before anything is written; any error fails the step with no
 change made. Step 1 runs the same checks on the tags present at that time, as early feedback.
@@ -1165,22 +1163,17 @@ For a Pod in namespace `N` named `P`, given the ReservedIPs of the cluster:
    as `tenantNetwork: T` or `clusterNetwork: C`, the ReservedIPs considered are those in namespace
    `N` whose `spec.network` is `{name: T, type: TenantNetwork}` or `{name: C, type: ClusterNetwork}`.
 4. The `ip` field is looked at against the IPv4 address of those ReservedIPs, and `ip6` against their
-   IPv6 address, independently. A field is replaced by the name of a ReservedIP when exactly one of
-   them matches:
-   - the field holds an address, with or without a prefix length, which is the same address as the
-     ReservedIP's once both are normalised, e.g. `10.0.0.5/24` matches `10.0.0.5`; or
-   - the field is `dynamic` and `{namespace: N, name: P}` is listed in the ReservedIP's
-     `dma.danm.io/source-pods` annotation, written by this step. This keeps the address of a Pod whose
-     `DanmEp` was tagged, and of a StatefulSet Pod or bare Pod recreated under the same name, even
-     though it asked for no particular address.
-5. In every other case the field is copied unchanged: a static address no ReservedIP holds, `dynamic`
-   for any Pod not listed, `none`, an empty field, or a match against more than one ReservedIP (which
-   this step never creates, and which is logged).
+   IPv6 address, independently. A field is replaced by the name of a ReservedIP when it holds an
+   address, with or without a prefix length, which is the same address as that ReservedIP's once both
+   are normalised, e.g. `10.0.0.5/24` matches `10.0.0.5`, and no other ReservedIP holds it too.
+5. In every other case the field is copied unchanged: a static address no ReservedIP holds, `none`,
+   an empty field, or a match against more than one ReservedIP (which this step never creates, and
+   which is logged).
 
-A Pod created from `generateName` has no name at admission, so for the shim only the literal case
-can apply to it; this step and step 13 see its final name. A dynamic request from a Pod not listed,
-such as a new replica of a Deployment, is left as `dynamic`: no Pod identity ties it to one address,
-and 4.4 gives it a free one.
+A `dynamic` field is never rewritten. The feature turns static addressing into ReservedIP
+references; a Pod which asked DANM to pick an address keeps asking that, and 4.4 picks one for it,
+skipping the reserved ones. The rewrite therefore needs no Pod identity at all, which is also why it
+applies unchanged to a Pod created from `generateName`, which has no name yet at admission.
 
 **Pod annotations.** 4.4 skips a reserved address in dynamic allocation, and refuses a literal
 static request for it, so a Pod gets the address only when its `danm.io/interfaces` entry references
@@ -1189,11 +1182,12 @@ carrying the marker and patches those whose value changes. That covers the
 Pods patched by step 5 and the Pods the shim admitted since step 4, neither of which could see a
 ReservedIP yet. From then on the shim applies the rewrite to every new Pod.
 
-The step reports, without failing, every Pod controller whose template requests a replicated
-address dynamically and whose Pods do not keep their names, such as a Deployment: its new Pods are
-not mapped by the rule and come back with a different address. The operator changes such templates
-to reference the ReservedIP by name. Templates referencing it, or requesting it literally, also
-need to be on the new key before `dma shim remove`, like the template cleanup of step 4.
+The step reports, without failing, every tagged `DanmEp` whose Pod asks for the tagged address
+dynamically. Such a Pod does not get its address back: the address is reserved, and 4.4 hands a
+dynamic request a different one, so the reservation keeps the address for no one until the Pod's
+template requests it by the ReservedIP's name. Step 1 reports the same, on the tags present at that
+time. Templates referencing a ReservedIP, or requesting an address literally, also need to be on the
+new key before `dma shim remove`, like the template cleanup of step 4.
 
 Idempotent and resumable: existing identical ReservedIPs and already-set `RipRefs` are skipped.
 Tags added or changed after this step are not replicated, see step 13.
@@ -1204,6 +1198,28 @@ ReservedIPs the step created or found identical are recorded in its state record
 name, which is how rollback finds them; `dma` does not mark objects as its own. It then re-applies the rewrite to every marked Pod,
 which with the ReservedIPs gone restores a verbatim copy of the old value. LIFO rollback guarantees that the 4.4 webhook of step 10 is
 not live at that point, so nothing tries to validate the deletions.
+
+Implementation notes:
+
+- The planner of step 1 is the one this step runs: the tags are read from the old-group `DanmEp`s,
+  validated against the old-group networks and `TenantConfig`, and turned into the list of
+  ReservedIPs to create. Any problem fails the step before the first write.
+- The planned list is recorded in the step's state record before anything is created, not after, so
+  that a run which fails halfway still leaves rollback a complete list to clean up.
+- An existing ReservedIP of the same name is compared to the planned one by labels, annotations and
+  spec. Identical is a skip; anything else fails the step.
+- The network status is written through the `/status` subresource of the new-group copy, one entry
+  per namespace holding the names, exactly as `updateNewNetwork` of the 4.4 webhook builds it.
+- `Detect`: `Done` in lightweight mode and when no tag is present; otherwise it checks that every
+  planned ReservedIP exists, that every shared tag's `DanmEp` copy carries its reference, and that no
+  marked Pod's value would still change. The last two are what keeps a run which created the
+  ReservedIPs but failed before the copies or the Pods from reading as `Done`.
+- The Pod rewrite is the shared `NewInterfaces` of step 4, re-applied to every marked Pod with the
+  ReservedIPs now listed from the new group. The same call in rollback, with the ReservedIPs gone,
+  restores the verbatim copy.
+- The dynamic request of a tagged `DanmEp` is recognised by reading the Pod's own
+  `danm.k8s.io/interfaces` entry for that network and family. A Pod which no longer exists is not
+  reported, as there is nothing left to correct.
 
 ### Step 10: `deploy-new-webhook`
 

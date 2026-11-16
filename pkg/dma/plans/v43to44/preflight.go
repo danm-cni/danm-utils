@@ -549,7 +549,7 @@ func (check *preflight) verifyRipTags(ctx context.Context) error {
 	}
 	check.report.ReservedIPs = len(rips)
 	check.handle.Printf("%d DanmEps are tagged for ReservedIP replication, describing %d ReservedIPs.", len(tagged), len(rips))
-	return nil
+	return warnDynamicTags(ctx, check.handle, tagged)
 }
 
 func (check *preflight) verifyImages(ctx context.Context) error {
