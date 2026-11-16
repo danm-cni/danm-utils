@@ -217,8 +217,11 @@ func applyCopy(ctx context.Context, handle *cluster.Handle, kind apiKind, desire
 }
 
 func transformed(kind apiKind, source *unstructured.Unstructured) (*unstructured.Unstructured, error) {
-	if kind == kindTenantConfig {
+	switch kind {
+	case kindTenantConfig:
 		return transformedTenantConfig(source)
+	case kindDanmEp:
+		return transformedDanmEp(source)
 	}
 	return transformedNetwork(kind, source)
 }
@@ -314,7 +317,8 @@ func copiedMeta(source metav1.ObjectMeta, dropped ...string) metav1.ObjectMeta {
 }
 
 func sameCopy(kind apiKind, desired, existing *unstructured.Unstructured) (bool, error) {
-	if kind == kindTenantConfig {
+	switch kind {
+	case kindTenantConfig:
 		left, right := &danmtypes.TenantConfig{}, &danmtypes.TenantConfig{}
 		if err := decodeObjectInto(kind, desired, left); err != nil {
 			return false, err
@@ -323,6 +327,15 @@ func sameCopy(kind apiKind, desired, existing *unstructured.Unstructured) (bool,
 			return false, err
 		}
 		return tenantConfigsMatch(left, right), nil
+	case kindDanmEp:
+		left, right := &danmtypes.DanmEp{}, &danmtypes.DanmEp{}
+		if err := decodeObjectInto(kind, desired, left); err != nil {
+			return false, err
+		}
+		if err := decodeObjectInto(kind, existing, right); err != nil {
+			return false, err
+		}
+		return danmEpsMatch(left, right), nil
 	}
 	left, right := &danmtypes.DanmNet{}, &danmtypes.DanmNet{}
 	if err := decodeObjectInto(kind, desired, left); err != nil {

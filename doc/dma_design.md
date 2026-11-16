@@ -1045,6 +1045,21 @@ from the old-group `DanmEp`.
 `DanmEp`s are not covered by the warning of step 6: CNI keeps creating and deleting them during the
 window, and step 13 synchronises them in full.
 
+Implementation notes:
+
+- The step is the step 6 machinery run over `DanmEp` alone: the same pruning, the same metadata
+  rebuild, the same name-based `Detect`, the same correction of a copy which differs, and the same
+  rollback. Only the transformation and the match differ.
+- The Pod `ownerReferences` survive the metadata rebuild, as only references into the old group are
+  dropped, and a Pod reference is a core `v1` one.
+- Neither `DanmEpIface.Mtu` nor `DanmEpSpec.RipRefs` is cleared: 4.3 has neither field, so a source
+  read into the 4.4 types carries them zero already.
+- `reservedIpRefs` is removed from the encoded copy rather than written empty: its Go tag is
+  `omitempty` on a struct, which never omits, and an empty object in every `DanmEp` of the cluster
+  is noise.
+- Matching compares the metadata and the whole spec. No field of a `DanmEp` is a bitmask, so the
+  comparison of step 6 is not needed here.
+
 ### Step 8: `dual-annotate-services`
 
 Patches `danm.io/{selector,network,tenantNetwork,clusterNetwork}` onto Services alongside the

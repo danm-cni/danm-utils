@@ -52,7 +52,7 @@ func New() engine.Plan {
 		installAnnotationShim{},
 		annotateExistingPods{},
 		copyNetworkObjects{},
-		pending(7, "copy-danmeps", engine.PhaseConvert, "Copy the DanmEps of the danm.k8s.io group into the danm.io group."),
+		copyDanmEps{},
 		pending(8, "dual-annotate-services", engine.PhaseConvert, "Add the danm.io Service annotations next to the danm.k8s.io ones."),
 		pending(9, "replicate-reserved-ips", engine.PhaseConvert, "Create the ReservedIPs tagged on old-group DanmEps."),
 		pending(10, "deploy-new-webhook", engine.PhaseCutover, "Roll the DANM webhook to 4.4 and point its configuration at the danm.io group."),
