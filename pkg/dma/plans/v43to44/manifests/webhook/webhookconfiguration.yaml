@@ -1,0 +1,73 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: danm-webhook-config
+webhooks:
+  - name: danm-netvalidation.danm.io
+    clientConfig:
+      service:
+        name: {{ .Service }}
+        namespace: {{ .Namespace }}
+        path: "/netvalidation"
+      caBundle: {{ .CaBundle }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["danm.io"]
+        apiVersions: ["v1"]
+        resources: ["danmnets", "clusternetworks", "tenantnetworks"]
+    failurePolicy: Fail
+    timeoutSeconds: 25
+    sideEffects: None
+    admissionReviewVersions:
+    - "v1beta1"
+  - name: danm-configvalidation.danm.io
+    clientConfig:
+      service:
+        name: {{ .Service }}
+        namespace: {{ .Namespace }}
+        path: "/confvalidation"
+      caBundle: {{ .CaBundle }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["danm.io"]
+        apiVersions: ["v1"]
+        resources: ["tenantconfigs"]
+    failurePolicy: Fail
+    timeoutSeconds: 25
+    sideEffects: None
+    admissionReviewVersions:
+    - "v1beta1"
+  - name: danm-netdeletion.danm.io
+    clientConfig:
+      service:
+        name: {{ .Service }}
+        namespace: {{ .Namespace }}
+        path: "/netdeletion"
+      caBundle: {{ .CaBundle }}
+    rules:
+      - operations: ["DELETE"]
+        apiGroups: ["danm.io"]
+        apiVersions: ["v1"]
+        resources: ["danmnets", "clusternetworks", "tenantnetworks"]
+    failurePolicy: Fail
+    timeoutSeconds: 25
+    sideEffects: NoneOnDryRun
+    admissionReviewVersions:
+    - "v1beta1"
+  - name: reservedipvalidation.danm.io
+    clientConfig:
+      service:
+        name: {{ .Service }}
+        namespace: {{ .Namespace }}
+        path: "/reservedip"
+      caBundle: {{ .CaBundle }}
+    rules:
+      - operations: ["CREATE", "UPDATE", "DELETE"]
+        apiGroups: ["danm.io"]
+        apiVersions: ["v1"]
+        resources: ["reservedips"]
+    failurePolicy: Fail
+    timeoutSeconds: 25
+    sideEffects: NoneOnDryRun
+    admissionReviewVersions:
+    - "v1beta1"
