@@ -53,7 +53,7 @@ func New() engine.Plan {
 		annotateExistingPods{},
 		copyNetworkObjects{},
 		copyDanmEps{},
-		pending(8, "dual-annotate-services", engine.PhaseConvert, "Add the danm.io Service annotations next to the danm.k8s.io ones."),
+		dualAnnotateServices{},
 		pending(9, "replicate-reserved-ips", engine.PhaseConvert, "Create the ReservedIPs tagged on old-group DanmEps."),
 		pending(10, "deploy-new-webhook", engine.PhaseCutover, "Roll the DANM webhook to 4.4 and point its configuration at the danm.io group."),
 		pending(11, "roll-control-plane", engine.PhaseCutover, "Roll netwatcher, svcwatcher and cleaner to 4.4."),

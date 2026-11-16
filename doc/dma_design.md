@@ -1068,6 +1068,21 @@ version finds its own keys.
 
 Rollback removes the added annotations.
 
+Implementation notes:
+
+- Every Service of the cluster is walked in pages and patched with a merge patch of
+  `metadata.annotations` alone, as in step 5. A Service with a `deletionTimestamp` is skipped, and
+  one deleted between the listing and its patch is counted, not an error.
+- Each of the four keys is copied on its own: a key whose `danm.io` counterpart already exists is
+  left alone, whoever set it, so a Service converted by hand is never overridden.
+- The keys this step added are recorded in the marker annotation
+  `dma.danm.io/service-annotations-copied`, as a comma separated list of their short names. That is
+  what rollback removes, so a hand-set `danm.io` key survives it, and a resumed run adds its keys to
+  the list rather than replacing it. The Services are not listed in state, for the 1 MiB reason of
+  step 6.
+- `Detect`: `Done` when no Service carries an old key without its new counterpart, `NotStarted` when
+  such Services exist and none carries the marker, `Partial` otherwise.
+
 ### Step 9: `replicate-reserved-ips`
 
 Turns addresses that Pods hold today into 4.4 ReservedIP objects, so that a workload can keep its
