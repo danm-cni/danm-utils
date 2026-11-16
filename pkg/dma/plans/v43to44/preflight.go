@@ -16,7 +16,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	structuralschema "k8s.io/apiextensions-apiserver/pkg/apiserver/schema"
-	"k8s.io/apiextensions-apiserver/pkg/apiserver/schema/pruning"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -403,9 +402,8 @@ func (check *preflight) scanSources(ctx context.Context, present map[apiKind]boo
 }
 
 func prunedFields(item *unstructured.Unstructured, target *structuralschema.Structural) []string {
-	copied := item.DeepCopy()
-	copied.SetAPIVersion(NewGroup + "/" + Version)
-	return pruning.PruneWithOptions(copied.Object, target, true, structuralschema.UnknownFieldPathOptions{TrackUnknownFieldPaths: true})
+	_, fields := pruneCopy(item, target)
+	return fields
 }
 
 func (check *preflight) keep(kind apiKind, name string, item *unstructured.Unstructured) {

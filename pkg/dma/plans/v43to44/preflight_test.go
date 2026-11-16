@@ -523,8 +523,12 @@ func TestParseMtuTag(t *testing.T) {
 		{name: "untagged"},
 		{name: "jumbo", value: "9000", tagged: true, mtu: 9000},
 		{name: "not a number", value: "big", tagged: true, invalid: true},
-		{name: "too small for IPv6", value: "1000", net6: "fd00::/64", tagged: true, invalid: true},
-		{name: "VxLAN overhead", value: "65500", vxlan: 100, tagged: true, invalid: true},
+		{name: "below the schema minimum", value: "1000", tagged: true, invalid: true},
+		{name: "below the schema minimum with IPv6", value: "1000", net6: "fd00::/64", tagged: true, invalid: true},
+		{name: "above the schema maximum", value: "9001", tagged: true, invalid: true},
+		{name: "jumbo minus the VxLAN overhead", value: "8950", vxlan: 100, tagged: true, mtu: 8950},
+		{name: "VxLAN overhead", value: "9000", vxlan: 100, tagged: true, invalid: true},
+		{name: "VxLAN overhead over IPv6", value: "8950", vxlan: 100, net6: "fd00::/64", tagged: true, invalid: true},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
