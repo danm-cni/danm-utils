@@ -68,7 +68,7 @@ func (installCniBinaries) Detect(ctx context.Context, handle *cluster.Handle) (e
 	if err != nil {
 		return engine.StateNotStarted, err
 	}
-	_, installed, err := handle.LoadSnapshot(ctx, cniInstalledKey)
+	_, installed, err := handle.LoadStepSnapshot(ctx, PlanID, installCniBinaries{}.Meta().ID, cniInstalledKey)
 	if err != nil {
 		return engine.StateNotStarted, err
 	}

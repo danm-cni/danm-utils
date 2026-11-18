@@ -12,7 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-const ripRefsField = "reservedIpRefs"
+const (
+	ripRefsField      = "reservedIpRefs"
+	EpCopiedMarkerKey = "dma.danm.io/copied"
+)
 
 type copyDanmEps struct{}
 
@@ -58,6 +61,7 @@ func transformedDanmEp(source *unstructured.Unstructured) (*unstructured.Unstruc
 	}
 	copied := &danmtypes.DanmEp{ObjectMeta: copiedMeta(endpoint.ObjectMeta, RipTagKeys...), Spec: endpoint.Spec}
 	copied.Labels = orNilMap(datastructs.EpLabels(copied.Labels, copied.Spec.RipRefs))
+	copied.Annotations = markedAsCopy(copied.Annotations)
 	encoded, err := encodeCopy(kindDanmEp, copied)
 	if err != nil {
 		return nil, err
@@ -68,4 +72,32 @@ func transformedDanmEp(source *unstructured.Unstructured) (*unstructured.Unstruc
 
 func danmEpsMatch(desired, existing *danmtypes.DanmEp) bool {
 	return metadataMatches(desired.ObjectMeta, existing.ObjectMeta) && equality.Semantic.DeepEqual(desired.Spec, existing.Spec)
+}
+
+func markedAsCopy(annotations map[string]string) map[string]string {
+	marked := map[string]string{EpCopiedMarkerKey: PlanID}
+	for key, value := range annotations {
+		marked[key] = value
+	}
+	return marked
+}
+
+func reconcileEndpointCopy(desired, existing *unstructured.Unstructured, fallback func() danmtypes.RipReferences) (bool, error) {
+	wanted, copied := &danmtypes.DanmEp{}, &danmtypes.DanmEp{}
+	if err := decodeObjectInto(kindDanmEp, desired, wanted); err != nil {
+		return false, err
+	}
+	if err := decodeObjectInto(kindDanmEp, existing, copied); err != nil {
+		return false, err
+	}
+	refs := copied.Spec.RipRefs
+	if refs == (danmtypes.RipReferences{}) && fallback != nil {
+		refs = fallback()
+	}
+	encoded, err := endpointWithRipRefs(wanted, refs)
+	if err != nil {
+		return false, err
+	}
+	*desired = *encoded
+	return danmEpsMatch(wanted, copied), nil
 }

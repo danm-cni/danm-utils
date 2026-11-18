@@ -170,6 +170,9 @@ func deleteCopies(ctx context.Context, handle *cluster.Handle, kinds []apiKind) 
 	for _, kind := range kinds {
 		deleted := 0
 		err := eachObject(ctx, handle, kind.NewResource(), func(item *unstructured.Unstructured) error {
+			if kind == kindDanmEp && item.GetAnnotations()[EpCopiedMarkerKey] == "" {
+				return nil
+			}
 			err := objectClient(handle, kind, kind.NewResource(), item.GetNamespace()).Delete(ctx, item.GetName(), metav1.DeleteOptions{})
 			if apierrors.IsNotFound(err) {
 				return nil
@@ -201,7 +204,12 @@ func applyCopy(ctx context.Context, handle *cluster.Handle, kind apiKind, desire
 	if err != nil {
 		return copySkipped, fmt.Errorf("cannot read %s %s of the %s group: %w", kind.Kind, name, NewGroup, err)
 	}
-	same, err := sameCopy(kind, desired, existing)
+	var same bool
+	if kind == kindDanmEp {
+		same, err = reconcileEndpointCopy(desired, existing, nil)
+	} else {
+		same, err = sameCopy(kind, desired, existing)
+	}
 	if err != nil {
 		return copySkipped, err
 	}
@@ -327,15 +335,6 @@ func sameCopy(kind apiKind, desired, existing *unstructured.Unstructured) (bool,
 			return false, err
 		}
 		return tenantConfigsMatch(left, right), nil
-	case kindDanmEp:
-		left, right := &danmtypes.DanmEp{}, &danmtypes.DanmEp{}
-		if err := decodeObjectInto(kind, desired, left); err != nil {
-			return false, err
-		}
-		if err := decodeObjectInto(kind, existing, right); err != nil {
-			return false, err
-		}
-		return danmEpsMatch(left, right), nil
 	}
 	left, right := &danmtypes.DanmNet{}, &danmtypes.DanmNet{}
 	if err := decodeObjectInto(kind, desired, left); err != nil {
