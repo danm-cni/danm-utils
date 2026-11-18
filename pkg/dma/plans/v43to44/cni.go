@@ -31,6 +31,7 @@ const (
 	cniInstalledKey = "cni-binaries"
 	cniModeInstall  = "install"
 	cniModeRestore  = "restore"
+	cniModeCleanup  = "cleanup"
 )
 
 //go:embed manifests/cni

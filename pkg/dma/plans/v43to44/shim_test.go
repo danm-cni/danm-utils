@@ -20,6 +20,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiextfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -51,8 +53,13 @@ func shimHandle(t *testing.T, mode cluster.Mode, available bool, objects ...k8sr
 	kube.PrependReactor("create", "deployments", markAvailable)
 	kube.PrependReactor("update", "deployments", markAvailable)
 	listKinds := map[schema.GroupVersionResource]string{kindReservedIP.NewResource(): "ReservedIPList"}
+	crds := []k8sruntime.Object{}
+	for _, kind := range sourceKinds(mode) {
+		crds = append(crds, &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: kind.OldCrdName()}})
+	}
 	return &cluster.Handle{
 		Kube:      kube,
+		ApiExt:    apiextfake.NewSimpleClientset(crds...),
 		Dynamic:   dynamicfake.NewSimpleDynamicClientWithCustomListKinds(k8sruntime.NewScheme(), listKinds),
 		State:     state.NewStore(kube, state.DefaultNamespace, state.DefaultName),
 		Namespace: state.DefaultNamespace,

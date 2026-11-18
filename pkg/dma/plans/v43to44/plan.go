@@ -1,9 +1,6 @@
 package v43to44
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/danm-cni/danm-utils/pkg/dma/cluster"
 	"github.com/danm-cni/danm-utils/pkg/dma/engine"
 )
@@ -59,7 +56,7 @@ func New() engine.Plan {
 		rollControlPlane{},
 		installCniBinaries{},
 		resyncAndVerify{},
-		pending(14, "remove-old-api", engine.PhaseCleanup, "Remove the danm.k8s.io webhook configuration, CRDs and RBAC, and the backed up CNI binaries."),
+		removeOldApi{},
 	}}
 }
 
@@ -93,32 +90,4 @@ func (plan *plan) Advisories(rows []engine.StepRow) []string {
 		return []string{frozenGroupWarning}
 	}
 	return nil
-}
-
-type pendingStep struct {
-	meta engine.StepMeta
-}
-
-func pending(id int, name string, phase engine.Phase, description string) pendingStep {
-	return pendingStep{meta: engine.StepMeta{ID: id, Name: name, Description: description, Phase: phase, Reversible: phase != engine.PhaseCleanup}}
-}
-
-func (step pendingStep) Meta() engine.StepMeta {
-	return step.meta
-}
-
-func (step pendingStep) Detect(_ context.Context, _ *cluster.Handle) (engine.StepState, error) {
-	return engine.StateNotStarted, nil
-}
-
-func (step pendingStep) Execute(_ context.Context, _ *cluster.Handle) error {
-	return step.notImplemented()
-}
-
-func (step pendingStep) Rollback(_ context.Context, _ *cluster.Handle) error {
-	return step.notImplemented()
-}
-
-func (step pendingStep) notImplemented() error {
-	return fmt.Errorf("step %d (%s) is not implemented in this build of the assistant", step.meta.ID, step.meta.Name)
 }

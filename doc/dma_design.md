@@ -1542,6 +1542,49 @@ CRDs are deleted only by exact name, from the detected mode's list, never by gro
 the other mode is left in place and reported rather than silently dropped, and any other CRD in the
 `danm.k8s.io` group, such as `danmnetworkpolicies.danm.k8s.io`, is never touched.
 
+Implementation notes:
+
+- The runner already enforces most of the gate: an irreversible step demands the plan ID as its
+  confirmation token, refuses to run while any earlier step is not `Done` even with `--force`, and
+  never rolls back. `Rollback` therefore only returns an error saying so. What the step checks for
+  itself is the state no earlier `Detect` covers: that step 12 recorded the CNI installation, that
+  no Pod carries only `danm.k8s.io/interfaces`, and that no template of a component rolled in step
+  11 does either. Each failing check names its objects, and none of them is relaxed by `--force`.
+- `Warnings` states what is about to be destroyed: the CRDs by name, the number of objects in them,
+  and, when step 1 recorded an acceptance of pruned fields, how many objects lose fields for good
+  (section 5.9), since the old-group copy deleted here is the last one holding them.
+- The webhook sweep deletes every `MutatingWebhookConfiguration` and `ValidatingWebhookConfiguration`
+  whose rules all name the old group, except the one step 10 recorded: that object is the 4.4
+  configuration now, under whatever name the 4.3 installation gave it. Normally there is nothing
+  left to delete, since step 10 repointed the one configuration it found; the sweep exists for the
+  cluster where step 10 had several candidates and repointed the one named `danm-webhook-config`,
+  leaving the others scoped to `danm.k8s.io`. A configuration whose rules name both groups is
+  reported and left in place, as deleting it would take 4.4 validation down with it. The annotation
+  shim's own configuration is never a candidate: its rules are on Pods.
+- The CRDs are deleted by the exact names of the detected mode, `<plural>.danm.k8s.io`, through the
+  same `apiKind` list the rest of the plan uses. A CRD of the other mode, or any other CRD of the
+  group, is read, reported and left alone. The deletion cascades to every object in those CRDs, which
+  is the destructive part of the step, and the step waits until the CRDs are gone before it goes on.
+- The old RBAC is discovered, since its names belong to the 4.3 deployment rather than to `dma`: a
+  ClusterRole is deleted only when it has rules and every one of them names the old group and no
+  other API group, together with the ClusterRoleBindings which reference it. A role which also
+  grants something else, including one granting both groups, is reported and left, and the
+  `danm:<component>-4.4` roles of step 3 are never candidates. The subjects step 3 recorded keep
+  their 4.4 roles, so nothing a component needs is withdrawn.
+- The templates of the components rolled in step 11 lose `danm.k8s.io/interfaces` from their Pod
+  template, leaving `danm.io/interfaces` as step 11 wrote it. This restarts those Pods, which is
+  what the gate on the node binaries is for. A component which is not deployed, or whose template
+  never carried the old key, is skipped.
+- The node-local backups are removed by one final copier run in a third mode, `dma cni cleanup`,
+  which deletes `<binary>.dma-bak-<planID>` and writes the same readiness marker. It reuses the step
+  12 DaemonSet, its waiting and its cleanup, including leaving a copier which never becomes ready in
+  place with a warning. It runs last, so a cluster where the copier cannot run still has its API
+  group removed; the step fails naming what is left, and running it again retries only the backups,
+  every earlier part being a no-op by then.
+- `Detect`: `Done` once no old-group CRD of the detected mode exists and no rolled template carries
+  only the old key, `NotStarted` while every one of those CRDs is still installed, `Partial` in
+  between, which is also what an interrupted run reads as.
+
 ## 8. Deployment
 
 `integration/manifests/dma/dma.yaml` provides the Pod, ServiceAccount, ClusterRole and
