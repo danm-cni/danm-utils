@@ -34,7 +34,7 @@ func (resyncAndVerify) Meta() engine.StepMeta {
 }
 
 func (resyncAndVerify) Detect(ctx context.Context, handle *cluster.Handle) (engine.StepState, error) {
-	_, verified, err := handle.LoadSnapshot(ctx, resyncRecordKey)
+	_, verified, err := handle.LoadStepSnapshot(ctx, PlanID, resyncAndVerify{}.Meta().ID, resyncRecordKey)
 	if err != nil {
 		return engine.StateNotStarted, err
 	}
@@ -332,18 +332,9 @@ func resyncEndpoints(ctx context.Context, handle *cluster.Handle) error {
 		if err != nil {
 			return fmt.Errorf("cannot read DanmEp %s of the %s group: %w", name, NewGroup, err)
 		}
-		copied := &danmtypes.DanmEp{}
-		if err := decodeObjectInto(kindDanmEp, existing, copied); err != nil {
-			return err
-		}
-		refs := copied.Spec.RipRefs
-		if refs == (danmtypes.RipReferences{}) {
-			refs = replicatedRipRefs(handle, endpoint, recorded, rips)
-		}
-		if err := setEndpointRipRefs(desired, refs); err != nil {
-			return err
-		}
-		same, err := sameCopy(kindDanmEp, desired, existing)
+		same, err := reconcileEndpointCopy(desired, existing, func() danmtypes.RipReferences {
+			return replicatedRipRefs(handle, endpoint, recorded, rips)
+		})
 		if err != nil {
 			return err
 		}
@@ -366,6 +357,9 @@ func resyncEndpoints(ctx context.Context, handle *cluster.Handle) error {
 		if sources[name] {
 			return nil
 		}
+		if item.GetAnnotations()[EpCopiedMarkerKey] == "" {
+			return nil
+		}
 		client := objectClient(handle, kindDanmEp, kindDanmEp.NewResource(), item.GetNamespace())
 		if err := client.Delete(ctx, item.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("cannot delete DanmEp %s of the %s group: %w", name, NewGroup, err)
@@ -385,17 +379,25 @@ func setEndpointRipRefs(item *unstructured.Unstructured, refs danmtypes.RipRefer
 	if err := decodeObjectInto(kindDanmEp, item, endpoint); err != nil {
 		return err
 	}
+	encoded, err := endpointWithRipRefs(endpoint, refs)
+	if err != nil {
+		return err
+	}
+	*item = *encoded
+	return nil
+}
+
+func endpointWithRipRefs(endpoint *danmtypes.DanmEp, refs danmtypes.RipReferences) (*unstructured.Unstructured, error) {
 	endpoint.Spec.RipRefs = refs
 	endpoint.Labels = orNilMap(datastructs.EpLabels(endpoint.Labels, refs))
 	encoded, err := encodeCopy(kindDanmEp, endpoint)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if refs == (danmtypes.RipReferences{}) {
 		unstructured.RemoveNestedField(encoded.Object, "spec", ripRefsField)
 	}
-	*item = *encoded
-	return nil
+	return encoded, nil
 }
 
 func replicatedRipRefs(handle *cluster.Handle, endpoint *danmtypes.DanmEp, recorded []recordedRip, rips []*danmtypes.ReservedIP) danmtypes.RipReferences {

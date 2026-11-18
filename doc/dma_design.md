@@ -1065,6 +1065,14 @@ Implementation notes:
   is noise.
 - Matching compares the metadata and the whole spec. No field of a `DanmEp` is a bitmask, so the
   comparison of step 6 is not needed here.
+- A re-run carries the `reservedIpRefs` and the ReservedIP labels of an existing copy over into the
+  object it writes, since the transformation itself strips them. Without that, copying one endpoint
+  created after step 9 would clear the references step 9 wrote on every other copy, and 4.4
+  `cleaner` frees a shared ReservedIP address off those labels.
+- Rollback deletes only the endpoints carrying `dma.danm.io/copied`, the same rule step 13 applies.
+  Once step 12 ran, the 4.4 CNI writes `DanmEp`s of its own for new Pods; those have no old-group
+  original, and a rollback reaching back to this step must not drop the only record of their
+  addresses.
 
 ### Step 8: `dual-annotate-services`
 
@@ -1484,7 +1492,10 @@ Implementation notes:
   replaced, resized for `vxlan` entries by the step 6 `copiedVniAlloc`. An entry which the new-group
   copy does not have is non-IPAM drift, reported rather than added.
 - `DanmEp`s are reconciled in full against the step 7 transformation: a missing copy is created, a
-  drifted copy is updated, and a copy whose old-group original is gone is deleted. The
+  drifted copy is updated, and a copy whose old-group original is gone is deleted. Only a copy is
+  ever deleted: step 7 and this step stamp every endpoint they write with `dma.danm.io/copied`, and
+  an endpoint without that annotation belongs to a Pod the 4.4 CNI created after step 12, which has
+  no old-group original and must survive the resync. The
   `reservedIpRefs` of an existing copy are kept as step 9 wrote them, since the transformation
   strips the field; the labels are recomputed from the refs which survive, as in step 7. A field the
   4.4 schema does not know is pruned with a warning rather than failing the step, unlike in step 6:
@@ -1508,8 +1519,9 @@ Implementation notes:
   them on every node it found and recorded that, and step 14 gates on that record before it deletes
   anything. Running a DaemonSet over the fleet to re-read files is not work this step owes, and a
   node which joined after step 12 is a gap step 12 closes by being run again.
-- `Detect` reads the state record: `Done` once the step recorded a successful run, `NotStarted`
-  otherwise. It deliberately does not scan the two groups for drift, which a step this late is
+- `Detect` reads the record of this step out of the plan record directly rather than through the
+  handle, which only serves the step the runner is currently running, and the runner detects before
+  it begins one: `Done` once the step recorded a successful run, `NotStarted` otherwise. It deliberately does not scan the two groups for drift, which a step this late is
   executed again for anyway, and which `Detect` has to stay cheap enough not to do on every
   `dma status`.
 - `Rollback` has nothing of its own to undo: the allocation state this step wrote lives in the copies

@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -254,7 +255,9 @@ func TestResyncSynchronisesDanmEps(t *testing.T) {
 	createSource(t, handle, kindDanmEp, "app", "fresh-ep", nil, endpointContent("10.0.0.9/24", "fresh-pod"))
 	createSource(t, handle, kindDanmEp, "app", "known-ep", nil, endpointContent("10.0.0.10/24", "known-pod"))
 	createCopy(t, handle, kindDanmEp, "app", "known-ep", nil, endpointContent("10.0.0.3/24", "known-pod"))
-	createCopy(t, handle, kindDanmEp, "app", "gone-ep", nil, endpointContent("10.0.0.4/24", "gone-pod"))
+	createCopy(t, handle, kindDanmEp, "app", "gone-ep",
+		map[string]any{"annotations": map[string]any{EpCopiedMarkerKey: PlanID}}, endpointContent("10.0.0.4/24", "gone-pod"))
+	createCopy(t, handle, kindDanmEp, "app", "native-ep", nil, endpointContent("10.0.0.5/24", "native-pod"))
 	if err := (resyncAndVerify{}).Execute(ctx, handle); err != nil {
 		t.Fatal(err)
 	}
@@ -266,8 +269,14 @@ func TestResyncSynchronisesDanmEps(t *testing.T) {
 	if address, _, _ := unstructured.NestedString(known.Object, "spec", "Interface", "Address"); address != "10.0.0.10/24" {
 		t.Fatalf("the updated copy holds the address %q", address)
 	}
-	if _, err := objectClient(handle, kindDanmEp, kindDanmEp.NewResource(), "app").Get(ctx, "gone-ep", metav1.GetOptions{}); !strings.Contains(err.Error(), "not found") {
+	if _, err := objectClient(handle, kindDanmEp, kindDanmEp.NewResource(), "app").Get(ctx, "gone-ep", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("the copy of a deleted DanmEp is still there: %v", err)
+	}
+	if _, err := objectClient(handle, kindDanmEp, kindDanmEp.NewResource(), "app").Get(ctx, "native-ep", metav1.GetOptions{}); err != nil {
+		t.Fatalf("a DanmEp the 4.4 CNI wrote was deleted: %v", err)
+	}
+	if marker, _, _ := unstructured.NestedString(fresh.Object, "metadata", "annotations", EpCopiedMarkerKey); marker != PlanID {
+		t.Fatalf("a created copy carries the marker %q", marker)
 	}
 }
 
@@ -410,5 +419,41 @@ func TestResyncWritesNothingWhenNothingChanged(t *testing.T) {
 	}
 	if len(*writes) > 0 {
 		t.Fatalf("a second run rewrote objects which did not change: %v", *writes)
+	}
+}
+
+func TestDetectReadsTheRecordBeforeTheStepBegins(t *testing.T) {
+	handle, _ := resyncHandle(t, cluster.ModeProduction)
+	ctx := context.Background()
+	handle.PlanID, handle.StepID = "", 0
+	for name, detect := range map[string]func() (engine.StepState, error){
+		"step 12": func() (engine.StepState, error) { return installCniBinaries{}.Detect(ctx, handle) },
+		"step 13": func() (engine.StepState, error) { return resyncAndVerify{}.Detect(ctx, handle) },
+	} {
+		detected, err := detect()
+		if err != nil {
+			t.Fatalf("detecting %s outside of a running step failed: %v", name, err)
+		}
+		if detected != engine.StateNotStarted {
+			t.Fatalf("%s reads as %s before it ran", name, detected)
+		}
+	}
+	if _, err := handle.State.Mutate(ctx, PlanID, func(record *state.PlanRecord) error {
+		record.UpsertStep(state.StepRecord{
+			ID:        resyncAndVerify{}.Meta().ID,
+			Name:      resyncAndVerify{}.Meta().Name,
+			Status:    state.StatusDone,
+			Snapshots: map[string]string{resyncRecordKey: "2026-11-18T10:00:00Z"},
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	detected, err := resyncAndVerify{}.Detect(ctx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detected != engine.StateDone {
+		t.Fatalf("step 13 reads as %s although its run is recorded", detected)
 	}
 }

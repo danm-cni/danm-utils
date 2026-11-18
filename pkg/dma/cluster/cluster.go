@@ -240,11 +240,15 @@ func (handle *Handle) LoadSnapshot(ctx context.Context, key string) (string, boo
 	if handle.PlanID == "" || handle.StepID == 0 {
 		return "", false, fmt.Errorf("snapshot %s cannot be loaded outside of a running step", key)
 	}
-	record, err := handle.State.Load(ctx, handle.PlanID)
+	return handle.LoadStepSnapshot(ctx, handle.PlanID, handle.StepID, key)
+}
+
+func (handle *Handle) LoadStepSnapshot(ctx context.Context, planID string, stepID int, key string) (string, bool, error) {
+	record, err := handle.State.Load(ctx, planID)
 	if err != nil || record == nil {
 		return "", false, err
 	}
-	stepRecord := record.Step(handle.StepID)
+	stepRecord := record.Step(stepID)
 	if stepRecord == nil {
 		return "", false, nil
 	}

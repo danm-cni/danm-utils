@@ -155,16 +155,8 @@ func verifyCleanupIsSafe(ctx context.Context, handle *cluster.Handle) error {
 }
 
 func cniInstallRecorded(ctx context.Context, handle *cluster.Handle) (bool, error) {
-	record, err := handle.State.Load(ctx, PlanID)
-	if err != nil || record == nil {
-		return false, err
-	}
-	stepRecord := record.Step(installCniBinaries{}.Meta().ID)
-	if stepRecord == nil {
-		return false, nil
-	}
-	_, found := stepRecord.Snapshots[cniInstalledKey]
-	return found, nil
+	_, found, err := handle.LoadStepSnapshot(ctx, PlanID, installCniBinaries{}.Meta().ID, cniInstalledKey)
+	return found, err
 }
 
 func podsWithOldKey(ctx context.Context, handle *cluster.Handle) ([]string, error) {
@@ -295,17 +287,9 @@ func removableWebhook(handle *cluster.Handle, name string, rules []admissionregi
 }
 
 func rolledWebhookConfiguration(ctx context.Context, handle *cluster.Handle) (string, error) {
-	record, err := handle.State.Load(ctx, PlanID)
-	if err != nil || record == nil {
+	snapshot, found, err := handle.LoadStepSnapshot(ctx, PlanID, deployNewWebhook{}.Meta().ID, webhookConfigurationKey)
+	if err != nil || !found {
 		return "", err
-	}
-	stepRecord := record.Step(deployNewWebhook{}.Meta().ID)
-	if stepRecord == nil {
-		return "", nil
-	}
-	snapshot, found := stepRecord.Snapshots[webhookConfigurationKey]
-	if !found {
-		return "", nil
 	}
 	configuration := &admissionregistrationv1.MutatingWebhookConfiguration{}
 	if err := json.Unmarshal([]byte(snapshot), configuration); err != nil {
