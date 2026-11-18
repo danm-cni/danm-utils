@@ -55,6 +55,13 @@ func (object *workload) template() *corev1.PodTemplateSpec {
 	return &object.deployment.Spec.Template
 }
 
+func (object *workload) selector() *metav1.LabelSelector {
+	if object.daemonSet != nil {
+		return object.daemonSet.Spec.Selector
+	}
+	return object.deployment.Spec.Selector
+}
+
 func (object *workload) problem() string {
 	if object.daemonSet != nil {
 		return daemonSetProblem(object.daemonSet)

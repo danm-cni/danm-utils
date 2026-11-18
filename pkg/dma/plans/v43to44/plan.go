@@ -58,7 +58,7 @@ func New() engine.Plan {
 		deployNewWebhook{},
 		rollControlPlane{},
 		installCniBinaries{},
-		pending(13, "resync-and-verify", engine.PhaseCutover, "Carry over the allocations made in the danm.k8s.io group since the copy, and verify the cluster."),
+		resyncAndVerify{},
 		pending(14, "remove-old-api", engine.PhaseCleanup, "Remove the danm.k8s.io webhook configuration, CRDs and RBAC, and the backed up CNI binaries."),
 	}}
 }

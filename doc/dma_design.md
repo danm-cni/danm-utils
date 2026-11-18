@@ -1429,8 +1429,9 @@ Implementation notes:
 ### Step 13: `resync-and-verify`
 
 Reconciles every object whose old-group content has drifted from its new-group copy since steps 6
-and 7, since 4.3 was still allocating IPs during the window. Then asserts cluster-wide health: all new-group components
-Ready, `netwatcher` serving the expected API set, no node left on an old binary.
+and 7, since 4.3 was still allocating IPs during the window. Then asserts cluster-wide health
+through the API: all new-group components Ready, and `netwatcher` serving the expected API set. The
+node side is not re-checked here; step 12 installed the binaries and step 14 gates on its record.
 
 The 4.4 webhook is live by now, so the shape of every write matters (section 2.5):
 
@@ -1459,6 +1460,61 @@ Non-IPAM changes are not applied. The step reports them, without failing, as the
 according to the warning of step 6: network and `TenantConfig` objects whose spec drifted outside
 IPAM fields, and objects created in or deleted from the old group after step 6. The operator applies
 whatever is still wanted to the new group by hand.
+
+Implementation notes:
+
+- The step is one `Execute` of two halves: the resync first, the verification after it. A resync
+  problem fails the step before anything is verified, since a cluster which did not reconcile is not
+  a cluster worth declaring healthy.
+- Every write is conditional on a difference. An object whose transformed old-group form already
+  matches its copy is left untouched, nothing is deleted and recreated, and a second run of the step
+  writes nothing at all. This keeps the resync out of the way of the 4.4 webhook, and keeps it from
+  bumping the resource version of objects `netwatcher` is watching.
+- Drift is computed with the step 6 and step 7 transformations themselves, not with a second copy of
+  their rules: the current old-group object is pruned and transformed exactly as it was then, and the
+  result is compared to the live new-group copy. Networks and `TenantConfig`s are compared with
+  `networksMatch` and `tenantConfigsMatch` with their IPAM fields blanked, so only non-IPAM drift is
+  reported; the IPAM fields themselves are compared separately and written when they differ.
+- A network's IPAM write is a read-modify-write of the live new-group object: the step reads it,
+  sets `alloc`, `alloc6`, `Pool.LastIp` and `Pool6.LastIp` from the transformed old object, and
+  UPDATEs. Nothing else of the spec is touched, so the write takes the webhook's fast path whenever
+  an allocation bitmask changed. The rare write in which only a `LastIp` drifted is fully validated
+  instead, which passes, as the object differs from the stored one in that field alone.
+- The `TenantConfig` write is the same shape: only the `alloc` of each `HostDevices` entry is
+  replaced, resized for `vxlan` entries by the step 6 `copiedVniAlloc`. An entry which the new-group
+  copy does not have is non-IPAM drift, reported rather than added.
+- `DanmEp`s are reconciled in full against the step 7 transformation: a missing copy is created, a
+  drifted copy is updated, and a copy whose old-group original is gone is deleted. The
+  `reservedIpRefs` of an existing copy are kept as step 9 wrote them, since the transformation
+  strips the field; the labels are recomputed from the refs which survive, as in step 7. A field the
+  4.4 schema does not know is pruned with a warning rather than failing the step, unlike in step 6:
+  an endpoint missing from the new group costs its Pod the networking the migration exists to keep.
+- A `DanmEp` created in the old group after step 9 gets `RipRefs` only from a `shared-` tag which
+  names a ReservedIP that step 9 recorded, whose network matches the endpoint's network and whose
+  address list holds the endpoint's address of that family. Every other tag added after step 9, and
+  every `shared-` tag which matches nothing recorded, is reported and left alone: the 4.4 webhook
+  refuses to create a ReservedIP for an address already in use, so the assistant cannot replicate it
+  any more.
+- Pods are re-patched exactly as in step 5, and the ReservedIP rewrite of step 9 is re-applied by
+  calling `rewriteMarkedPods`. Both are expected to report zero changes.
+- The verification has two parts, both of them API reads. Every workload the plan knows about, the
+  annotation shim included, is checked with the `workloadHealth` of step 1, and an unhealthy one
+  fails the step. The new-group CRDs of the detected mode must all exist and be `Established`, and
+  every `netwatcher` Pod must have started after the newest of them was created: a `netwatcher`
+  older than the CRDs discovered only the old group and has to be restarted. Since 4.4 `netwatcher`
+  refuses to start on a partial production API set, a ready Pod which started after the CRDs proves
+  it serves the expected set.
+- Nothing node-local is verified. The binaries are not visible through the API, step 12 installed
+  them on every node it found and recorded that, and step 14 gates on that record before it deletes
+  anything. Running a DaemonSet over the fleet to re-read files is not work this step owes, and a
+  node which joined after step 12 is a gap step 12 closes by being run again.
+- `Detect` reads the state record: `Done` once the step recorded a successful run, `NotStarted`
+  otherwise. It deliberately does not scan the two groups for drift, which a step this late is
+  executed again for anyway, and which `Detect` has to stay cheap enough not to do on every
+  `dma status`.
+- `Rollback` has nothing of its own to undo: the allocation state this step wrote lives in the copies
+  which rolling back steps 6 and 7 deletes. It drops the record, so the step reads as `NotStarted`
+  again.
 
 ### Step 14: `remove-old-api`
 

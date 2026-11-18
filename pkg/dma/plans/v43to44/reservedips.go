@@ -555,9 +555,17 @@ func recordPlannedRips(ctx context.Context, handle *cluster.Handle, planned []*p
 }
 
 func recordedRips(ctx context.Context, handle *cluster.Handle) ([]recordedRip, error) {
-	snapshot, found, err := handle.LoadSnapshot(ctx, reservedIpsRecordKey)
-	if err != nil || !found {
+	record, err := handle.State.Load(ctx, PlanID)
+	if err != nil || record == nil {
 		return nil, err
+	}
+	stepRecord := record.Step(replicateReservedIps{}.Meta().ID)
+	if stepRecord == nil {
+		return nil, nil
+	}
+	snapshot, found := stepRecord.Snapshots[reservedIpsRecordKey]
+	if !found {
+		return nil, nil
 	}
 	records := []recordedRip{}
 	if err := json.Unmarshal([]byte(snapshot), &records); err != nil {
