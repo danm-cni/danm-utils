@@ -229,12 +229,12 @@ func newCniCommand(flags *globalFlags) *cobra.Command {
 		Short:  "node side helpers of the CNI binary installer",
 		Hidden: true,
 	}
-	cni.AddCommand(newCniCopyCommand("install"), newCniCopyCommand("restore"), newCniWaitCommand())
+	cni.AddCommand(newCniCopyCommand("install"), newCniCopyCommand("restore"), newCniCopyCommand("cleanup"), newCniWaitCommand())
 	return cni
 }
 
 func newCniCopyCommand(mode string) *cobra.Command {
-	config := v43to44.CniCopyConfig{Restore: mode == "restore"}
+	config := v43to44.CniCopyConfig{Restore: mode == "restore", Cleanup: mode == "cleanup"}
 	command := &cobra.Command{
 		Use:   mode,
 		Short: mode + " the DANM CNI binaries of the node",

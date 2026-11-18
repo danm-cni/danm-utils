@@ -20,6 +20,7 @@ type CniCopyConfig struct {
 	Suffix  string
 	Marker  string
 	Restore bool
+	Cleanup bool
 	Wait    bool
 }
 
@@ -35,9 +36,12 @@ func CopyCniBinaries(ctx context.Context, config CniCopyConfig, out io.Writer) e
 	}
 	for _, binary := range PayloadBinaries {
 		var err error
-		if config.Restore {
+		switch {
+		case config.Restore:
 			err = restoreBinary(config, binary, out)
-		} else {
+		case config.Cleanup:
+			err = removeBackup(config, binary, out)
+		default:
 			err = installBinary(config, binary, out)
 		}
 		if err != nil {
@@ -99,6 +103,19 @@ func restoreBinary(config CniCopyConfig, binary string, out io.Writer) error {
 		return fmt.Errorf("cannot delete the backup %s: %w", backup, err)
 	}
 	fmt.Fprintf(out, "restored %s\n", live)
+	return nil
+}
+
+func removeBackup(config CniCopyConfig, binary string, out io.Writer) error {
+	backup := filepath.Join(config.Target, binary) + config.Suffix
+	if err := os.Remove(backup); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(out, "no backup of %s to delete\n", binary)
+			return nil
+		}
+		return fmt.Errorf("cannot delete the backup %s: %w", backup, err)
+	}
+	fmt.Fprintf(out, "deleted %s\n", backup)
 	return nil
 }
 
